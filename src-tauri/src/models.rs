@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+fn default_version() -> String {
+    "1.0".to_string()
+}
+
+fn default_project_type() -> String {
+    "novel".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectInfo {
     pub path: String,
     pub name: String,
@@ -8,6 +17,12 @@ pub struct ProjectInfo {
     pub cover_path: String,
     pub created_at: String,
     pub last_opened_at: String,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default = "default_project_type")]
+    pub project_type: String,
+    #[serde(default)]
+    pub type_config: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +35,7 @@ pub struct FileEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WordCount {
     pub total_chars: usize,
     pub chinese_chars: usize,

@@ -40,9 +40,12 @@ pub fn get_recent() -> Result<Vec<ProjectInfo>, String> {
                 path: v.get("path").and_then(|s| s.as_str()).unwrap_or("").to_string(),
                 name: v.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string(),
                 description: v.get("description").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-                cover_path: v.get("cover_path").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-                created_at: v.get("created_at").and_then(|s| s.as_str()).unwrap_or("").to_string(),
-                last_opened_at: v.get("last_opened_at").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                cover_path: v.get("coverPath").or_else(|| v.get("cover_path")).and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                created_at: v.get("createdAt").or_else(|| v.get("created_at")).and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                last_opened_at: v.get("lastOpenedAt").or_else(|| v.get("last_opened_at")).and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                version: v.get("version").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                project_type: v.get("projectType").or_else(|| v.get("project_type")).and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                type_config: v.get("typeConfig").or_else(|| v.get("type_config")).cloned().unwrap_or(serde_json::Value::Null),
             }).collect()
         });
 

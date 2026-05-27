@@ -284,6 +284,8 @@ const statsStr = computed(() => {
   return parts.join(' | ')
 })
 
+const gridSize = computed(() => Math.round(appState.fontSize * appState.lineHeight) + 'px')
+
 const editorStyle = computed(() => ({
   '--editor-font-family': appState.fontFamily,
   '--editor-font-size': appState.fontSize + 'px',
@@ -293,24 +295,10 @@ const editorStyle = computed(() => ({
   '--editor-color': appState.fontColor || 'var(--text-primary)',
   '--editor-text-indent': appState.firstIndent ? '2em' : '0',
   '--editor-para-margin': appState.paraGap ? '1.2em' : '0',
-  '--editor-grid-bg': gridBackground.value,
+  '--editor-grid-size': gridSize.value,
 }))
 
-const gridBackground = computed(() => {
-  switch (appState.gridStyle) {
-    case 'dots':
-      return 'radial-gradient(circle, var(--border-color) 1px, transparent 1px)'
-    case 'grid':
-      return `
-        linear-gradient(var(--border-color) 1px, transparent 1px),
-        linear-gradient(90deg, var(--border-color) 1px, transparent 1px)
-      `
-    case 'lines':
-      return `linear-gradient(var(--border-color) 1px, transparent 1px)`
-    default:
-      return 'none'
-  }
-})
+// Grid is now rendered via CSS pseudo-element ::before on .cm-content
 </script>
 
 <template>
@@ -341,7 +329,12 @@ const gridBackground = computed(() => {
         <span v-else class="save-status saved">已保存</span>
       </div>
 
-      <div class="editor-wrapper" :class="{ 'grid-active': appState.gridStyle !== 'none' }" :style="editorStyle">
+      <div class="editor-wrapper" :class="{
+        'grid-active': appState.gridStyle !== 'none',
+        'grid-lines': appState.gridStyle === 'lines',
+        'grid-dashed': appState.gridStyle === 'dashed',
+        'grid-dots': appState.gridStyle === 'dots'
+      }" :style="editorStyle">
         <Codemirror
           :model-value="appState.currentContent"
           :extensions="extensions"
@@ -492,9 +485,49 @@ const gridBackground = computed(() => {
   border: none !important;
 }
 
-.editor-wrapper.grid-active :deep(.cm-scroller) {
-  background-image: var(--editor-grid-bg, none);
-  background-size: 20px 20px;
+.editor-wrapper.grid-active :deep(.cm-content) {
+  position: relative;
+}
+.editor-wrapper.grid-active :deep(.cm-content)::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-repeat: repeat;
+}
+.editor-wrapper.grid-lines :deep(.cm-content)::before {
+  background-image: repeating-linear-gradient(0deg,
+    transparent 0px,
+    transparent calc(var(--editor-grid-size) - var(--grid-line-width, 1px)),
+    var(--grid-line-color, var(--border-color)) calc(var(--editor-grid-size) - var(--grid-line-width, 1px)),
+    var(--grid-line-color, var(--border-color)) var(--editor-grid-size)
+  );
+  background-size: 100% var(--editor-grid-size);
+  background-position: 0 var(--grid-baseline-offset, 2px);
+}
+.editor-wrapper.grid-dashed :deep(.cm-content)::before {
+  background-image: repeating-linear-gradient(0deg,
+    transparent 0px,
+    transparent calc(var(--editor-grid-size) - var(--grid-line-width, 1px)),
+    var(--grid-line-color, var(--border-color)) calc(var(--editor-grid-size) - var(--grid-line-width, 1px)),
+    var(--grid-line-color, var(--border-color)) var(--editor-grid-size)
+  );
+  background-size: 100% var(--editor-grid-size);
+  background-position: 0 var(--grid-baseline-offset, 2px);
+  -webkit-mask-image: repeating-linear-gradient(90deg,
+    black 0px, black 10px,
+    transparent 10px, transparent 18px
+  );
+  mask-image: repeating-linear-gradient(90deg,
+    black 0px, black 10px,
+    transparent 10px, transparent 18px
+  );
+}
+.editor-wrapper.grid-dots :deep(.cm-content)::before {
+  background-image: radial-gradient(circle, var(--grid-line-color, var(--border-color)) 1px, transparent 1px);
+  background-size: var(--editor-grid-size) var(--editor-grid-size);
+  background-position: 0 var(--grid-baseline-offset, 2px);
 }
 
 .editor-wrapper :deep(.cm-scroller) {

@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, nextTick, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, nextTick, onUnmounted } from 'vue'
 import { appState } from '../store'
 import { getConfig, setConfig, getAutoStart, setAutoStart } from '../api'
+import { getAIProviders, getKeyStatuses, getSavedKeys, saveAIKey, deleteAIKey, testAIConnection } from '../api/ai'
+import type { ProviderInfo, SavedKeyInfo } from '../api/ai'
+import { confirm as tauriConfirm } from '@tauri-apps/plugin-dialog'
 
 const emit = defineEmits<{
   close: []
@@ -11,6 +14,7 @@ const emit = defineEmits<{
 const navItems = [
   { id: 'file-location', label: '文件位置', icon: '📂' },
   { id: 'shortcuts', label: '快捷键', icon: '⌨' },
+  { id: 'ai-models', label: 'AI 模型', icon: '🤖' },
   { id: 'other', label: '其他', icon: '⚙' },
 ]
 
@@ -41,13 +45,20 @@ const shortcutDone: Record<string, boolean> = {
   'separator': true,        // Ctrl+Alt+S
   'chapter-start': true,    // Ctrl+↑
   'chapter-end': true,      // Ctrl+↓
-  'boss-key': false,        // Alt+` — not yet implemented
+  'boss-key': true,         // Alt+` — 已实现
   'view-shortcuts': true,   // Ctrl+0
-  'outline': false,         // Ctrl+1 — not yet implemented
-  'settings-panel': false,  // Ctrl+2 — not yet implemented
+  'outline': true,          // Ctrl+1 — 已实现
+  'settings-panel': true,   // Ctrl+2 — 已实现
   'find-replace': true,     // Ctrl+F
   'save': true,             // Ctrl+S
 }
+
+const isWelcome = computed(() => !appState.project)
+const isNovel = computed(() => appState.project?.projectType === 'novel')
+const isArticle = computed(() => {
+  const pt = appState.project?.projectType || ''
+  return pt === 'wechat_article' || pt === 'toutiao_article'
+})
 
 // Load config
 onMounted(async () => {
@@ -61,6 +72,7 @@ onMounted(async () => {
     const val = await getConfig('autoSave')
     if (val === 'false') appState.autoSave = false
   } catch { /* ignore */ }
+  loadAIProviders()
   await nextTick()
   setupObserver()
 })
@@ -113,6 +125,177 @@ async function saveDefaultDir() {
   try {
     await setConfig('defaultProjectDir', defaultDir.value)
   } catch {}
+}
+
+// ─── AI Settings ────────────────────────────────────────
+
+interface ModelSlot {
+  id: number
+  providerId: string
+  keyInput: string
+  modelInput: string
+  endpointInput: string
+  testing: boolean
+  testResult: { ok: boolean; msg: string } | null
+}
+
+const allProviders = ref<ProviderInfo[]>([])
+const keyStatuses = ref<Record<string, boolean>>({})
+const activeSlotId = ref(0)
+const slots = ref<ModelSlot[]>([createSlot(0)])
+let nextId = 1
+
+function createSlot(id: number): ModelSlot {
+  return { id, providerId: 'deepseek', keyInput: '', modelInput: '', endpointInput: '', testing: false, testResult: null }
+}
+
+function getProvider(slot: ModelSlot): ProviderInfo | null {
+  return allProviders.value.find(p => p.id === slot.providerId) || null
+}
+
+const providerGroups = computed(() => {
+  const cats = [
+    { label: '国际厂商', providers: [] as ProviderInfo[] },
+    { label: '国内厂商', providers: [] as ProviderInfo[] },
+    { label: '本地 / 自部署', providers: [] as ProviderInfo[] },
+  ]
+  for (const p of allProviders.value) {
+    if (p.category === 'international') cats[0].providers.push(p)
+    else if (p.category === 'domestic') cats[1].providers.push(p)
+    else cats[2].providers.push(p)
+  }
+  return cats.filter(g => g.providers.length > 0)
+})
+
+async function loadAIProviders() {
+  try {
+    allProviders.value = await getAIProviders()
+    const statuses = await getKeyStatuses()
+    keyStatuses.value = statuses
+
+    // Rebuild slots from saved configs (skip entries without an actual key)
+    const savedKeys = await getSavedKeys()
+    const validKeys = savedKeys.filter(sk => sk.hasKey)
+    if (validKeys.length > 0) {
+      slots.value = validKeys.map((sk, i) => {
+        const slot = createSlot(i)
+        slot.providerId = sk.providerId
+        slot.keyInput = sk.apiKey || ''
+        slot.endpointInput = sk.endpoint || (allProviders.value.find(p => p.id === sk.providerId)?.defaultEndpoint || '')
+        slot.modelInput = sk.defaultModel || (allProviders.value.find(p => p.id === sk.providerId)?.models[0]?.id || '')
+        return slot
+      })
+      nextId = validKeys.length
+
+      // Restore active slot
+      const activeProvider = await getConfig('activeAiProvider')
+      if (activeProvider) {
+        const idx = slots.value.findIndex(s => s.providerId === activeProvider)
+        if (idx >= 0) activeSlotId.value = slots.value[idx].id
+      }
+    } else {
+      slots.value = [createSlot(0)]
+      nextId = 1
+      initSlot(slots.value[0])
+    }
+  } catch { /* ignore */ }
+}
+
+function initSlot(slot: ModelSlot) {
+  slot.testResult = null
+  const p = allProviders.value.find(x => x.id === slot.providerId)
+  if (p) {
+    slot.endpointInput = p.defaultEndpoint
+    slot.modelInput = p.models[0]?.id || ''
+  }
+}
+
+function onSlotProviderChange(slot: ModelSlot) {
+  initSlot(slot)
+}
+
+function addSlot() {
+  const id = nextId++
+  const slot = createSlot(id)
+  initSlot(slot)
+  slots.value.push(slot)
+}
+
+function removeSlot(slot: ModelSlot) {
+  if (slots.value.length <= 1) return
+  slots.value = slots.value.filter(s => s.id !== slot.id)
+  if (activeSlotId.value === slot.id) {
+    activeSlotId.value = slots.value[0].id
+  }
+  // Also remove from backend if a config was saved
+  if (keyStatuses.value[slot.providerId]) {
+    deleteAIKey(slot.providerId).catch(() => {})
+    keyStatuses.value[slot.providerId] = false
+  }
+}
+
+function applySlot(slot: ModelSlot) {
+  if (!keyStatuses.value[slot.providerId]) return
+  activeSlotId.value = slot.id
+  try { setConfig('activeAiProvider', slot.providerId) } catch {}
+  try { setConfig('activeAiModel', slot.modelInput) } catch {}
+}
+
+async function saveSlot(slot: ModelSlot) {
+  const p = getProvider(slot)
+  if (p?.requiresApiKey && !slot.keyInput) {
+    if (keyStatuses.value[slot.providerId]) {
+      alert('请输入新的 API Key 以覆盖现有密钥，或点击「清除」移除密钥')
+    } else {
+      alert('请先填写 API Key')
+    }
+    return
+  }
+  try {
+    await saveAIKey(slot.providerId, slot.keyInput, slot.endpointInput, slot.modelInput)
+    keyStatuses.value[slot.providerId] = true
+    slot.testResult = null
+  } catch (e: any) {
+    alert('保存失败: ' + (e?.message || e))
+  }
+}
+
+async function clearSlot(slot: ModelSlot) {
+  const pid = slot.providerId
+  if (!keyStatuses.value[pid]) return
+  const ok = await tauriConfirm('确定要清除此模型配置吗？', { title: '清除确认', kind: 'warning' })
+  if (!ok) return
+  try {
+    await deleteAIKey(pid)
+    keyStatuses.value[pid] = false
+    slot.keyInput = ''
+    slot.testResult = null
+  } catch (e: any) {
+    alert('清除失败: ' + (e?.message || e))
+  }
+}
+
+async function testSlot(slot: ModelSlot) {
+  const p = allProviders.value.find(x => x.id === slot.providerId)
+  if (!p) return
+  if (p.requiresApiKey && !slot.keyInput) {
+    if (keyStatuses.value[slot.providerId]) {
+      alert('密钥已保存但未回显，请重新输入后测试')
+    } else {
+      alert('请先填写 API Key')
+    }
+    return
+  }
+  const endpoint = slot.endpointInput || p.defaultEndpoint
+  slot.testing = true
+  try {
+    const resp = await testAIConnection(slot.providerId, slot.keyInput, endpoint)
+    slot.testResult = { ok: true, msg: '连接成功！响应: ' + resp }
+  } catch (e: any) {
+    slot.testResult = { ok: false, msg: '连接失败: ' + (e?.message || e) }
+  } finally {
+    slot.testing = false
+  }
 }
 
 function doClose() {
@@ -192,43 +375,129 @@ async function toggleAutoSave() {
                     <span class="sc-func">功能</span>
                     <span class="sc-key">快捷键</span>
                   </div>
-                  <div class="shortcut-row">
-                    <span class="sc-func">新建章节 <span v-if="shortcutDone['new-chapter']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>N</kbd></span>
-                    <span class="sc-func">全屏 <span v-if="shortcutDone['fullscreen']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>.</kbd></span>
-                  </div>
-                  <div class="shortcut-row">
-                    <span class="sc-func">一键排版 <span v-if="shortcutDone['format']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>K</kbd></span>
-                    <span class="sc-func">插入分隔线 <span v-if="shortcutDone['separator']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>S</kbd></span>
-                  </div>
-                  <div class="shortcut-row">
-                    <span class="sc-func">定位章首 <span v-if="shortcutDone['chapter-start']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>↑</kbd></span>
-                    <span class="sc-func">定位章尾 <span v-if="shortcutDone['chapter-end']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>↓</kbd></span>
-                  </div>
-                  <div class="shortcut-row">
-                    <span class="sc-func">老板键 <span v-if="shortcutDone['boss-key']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Alt</kbd> + <kbd>`</kbd></span>
-                    <span class="sc-func">查看快捷键 <span v-if="shortcutDone['view-shortcuts']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>0</kbd></span>
-                  </div>
-                  <div class="shortcut-row">
-                    <span class="sc-func">大纲 <span v-if="shortcutDone['outline']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>1</kbd></span>
-                    <span class="sc-func">设定 <span v-if="shortcutDone['settings-panel']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>2</kbd></span>
-                  </div>
-                  <div class="shortcut-row">
-                    <span class="sc-func">查找替换 <span v-if="shortcutDone['find-replace']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>F</kbd></span>
-                    <span class="sc-func">保存章节 <span v-if="shortcutDone['save']" class="sc-done">✓</span></span>
-                    <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>S</kbd></span>
-                  </div>
+
+                  <!-- Welcome: only basics -->
+                  <template v-if="isWelcome">
+                    <div class="shortcut-row">
+                      <span class="sc-func">全屏 <span class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>.</kbd></span>
+                      <span class="sc-func">老板键 <span class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Alt</kbd> + <kbd>`</kbd></span>
+                    </div>
+                    <div class="shortcut-row">
+                      <span class="sc-func">查看快捷键 <span class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>0</kbd></span>
+                      <span class="sc-func"></span>
+                      <span class="sc-key"></span>
+                    </div>
+                  </template>
+
+                  <!-- In project: context-appropriate -->
+                  <template v-else>
+                    <div class="shortcut-row">
+                      <span class="sc-func">新建章节 <span v-if="shortcutDone['new-chapter']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>N</kbd></span>
+                      <span class="sc-func">全屏 <span v-if="shortcutDone['fullscreen']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>.</kbd></span>
+                    </div>
+                    <div class="shortcut-row" v-if="!isArticle">
+                      <span class="sc-func">一键排版 <span v-if="shortcutDone['format']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>K</kbd></span>
+                      <span class="sc-func">插入分隔线 <span v-if="shortcutDone['separator']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>S</kbd></span>
+                    </div>
+                    <div class="shortcut-row">
+                      <span class="sc-func">定位章首 <span v-if="shortcutDone['chapter-start']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>↑</kbd></span>
+                      <span class="sc-func">定位章尾 <span v-if="shortcutDone['chapter-end']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>↓</kbd></span>
+                    </div>
+                    <div class="shortcut-row" v-if="isNovel">
+                      <span class="sc-func">老板键 <span v-if="shortcutDone['boss-key']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Alt</kbd> + <kbd>`</kbd></span>
+                      <span class="sc-func">查看快捷键 <span v-if="shortcutDone['view-shortcuts']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>0</kbd></span>
+                    </div>
+                    <div class="shortcut-row" v-else>
+                      <span class="sc-func">查看快捷键 <span v-if="shortcutDone['view-shortcuts']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>0</kbd></span>
+                      <span class="sc-func"></span>
+                      <span class="sc-key"></span>
+                    </div>
+                    <div class="shortcut-row" v-if="isNovel">
+                      <span class="sc-func">大纲 <span v-if="shortcutDone['outline']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>1</kbd></span>
+                      <span class="sc-func">设定 <span v-if="shortcutDone['settings-panel']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>2</kbd></span>
+                    </div>
+                    <div class="shortcut-row">
+                      <span class="sc-func">查找替换 <span v-if="shortcutDone['find-replace']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>F</kbd></span>
+                      <span class="sc-func">保存章节 <span v-if="shortcutDone['save']" class="sc-done">✓</span></span>
+                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>S</kbd></span>
+                    </div>
+                  </template>
                 </div>
+              </section>
+
+              <!-- AI 模型 -->
+              <section class="setting-section" data-section="ai-models">
+                <h3 class="section-title">AI 模型配置</h3>
+
+                <div v-if="allProviders.length === 0" class="empty-providers">加载中...</div>
+
+                <template v-else>
+                  <div v-for="slot in slots" :key="slot.id" class="model-slot">
+                    <div class="form-group">
+                      <label class="form-label">服务商</label>
+                      <select v-model="slot.providerId" class="form-input" @change="onSlotProviderChange(slot)">
+                        <optgroup v-for="g in providerGroups" :key="g.label" :label="g.label">
+                          <option v-for="p in g.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+                        </optgroup>
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label class="form-label">模型版本</label>
+                      <select v-model="slot.modelInput" class="form-input">
+                        <option v-for="m in (getProvider(slot)?.models || [])" :key="m.id" :value="m.id">{{ m.name }} — {{ m.description }}</option>
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label class="form-label">API Key</label>
+                      <input
+                        v-model="slot.keyInput"
+                        type="text"
+                        class="form-input"
+                        :placeholder="getProvider(slot)?.requiresSecretKey ? '格式: APIKey|SecretKey' : '粘贴 API Key'"
+                      />
+                    </div>
+
+                    <div class="slot-actions">
+                      <button class="btn-test" :disabled="slot.testing" @click="testSlot(slot)">
+                        {{ slot.testing ? '测试中...' : '测试连接' }}
+                      </button>
+                      <div class="actions-right">
+                        <button
+                          v-if="keyStatuses[slot.providerId]"
+                          class="btn-apply"
+                          :class="{ active: activeSlotId === slot.id }"
+                          @click="applySlot(slot)"
+                        >{{ activeSlotId === slot.id ? '已应用' : '应用' }}</button>
+                        <button v-if="keyStatuses[slot.providerId]" class="btn-clear" @click="clearSlot(slot)">清除</button>
+                        <button v-else-if="slots.length > 1" class="btn-remove" @click="removeSlot(slot)">移除</button>
+                        <button class="btn-save" @click="saveSlot(slot)">保存</button>
+                      </div>
+                    </div>
+
+                    <div v-if="slot.testResult" class="test-result" :class="{ ok: slot.testResult.ok, fail: !slot.testResult.ok }">
+                      {{ slot.testResult.msg }}
+                    </div>
+                  </div>
+
+                  <button class="btn-add-slot" @click="addSlot">+ 添加更多模型服务</button>
+                </template>
               </section>
 
               <!-- 其他 -->
@@ -553,6 +822,138 @@ async function toggleAutoSave() {
 }
 .toggle-switch input:checked + .toggle-slider::before {
   transform: translateX(20px);
+}
+
+/* ===== AI Model Slots ===== */
+.empty-providers {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 16px 0;
+  font-size: 13px;
+}
+
+.model-slot {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 10px;
+}
+
+.model-slot .form-group {
+  margin-bottom: 14px;
+}
+
+.model-slot .form-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.model-slot .form-input:focus { border-color: var(--accent-color); }
+.model-slot .form-input::placeholder { color: var(--text-muted); }
+
+.slot-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.actions-right {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-test, .btn-save, .btn-clear, .btn-apply, .btn-remove {
+  padding: 6px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+
+.btn-test {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+.btn-test:hover:not(:disabled) { background: var(--accent-light); color: var(--accent-color); border-color: var(--accent-color); }
+.btn-test:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-save {
+  background: var(--accent-color);
+  color: #1e1e2e;
+  border-color: var(--accent-color);
+  font-weight: 500;
+}
+.btn-save:hover { opacity: 0.85; }
+
+.btn-clear {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+}
+.btn-clear:hover { background: var(--hover-bg); color: var(--text-primary); }
+
+.btn-apply {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border-color);
+}
+.btn-apply:hover { background: var(--accent-light); color: var(--accent-color); border-color: var(--accent-color); }
+.btn-apply.active {
+  background: var(--accent-light);
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+  font-weight: 600;
+}
+
+.btn-remove {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+}
+.btn-remove:hover { background: var(--hover-bg); color: var(--danger-color); }
+
+.btn-add-slot {
+  width: 100%;
+  padding: 10px 0;
+  margin-top: 6px;
+  border: 1px dashed var(--border-color);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.btn-add-slot:hover { border-color: var(--accent-color); color: var(--accent-color); background: var(--accent-light); }
+
+.test-result {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.test-result.ok {
+  background: rgba(39, 174, 96, 0.1);
+  color: var(--success-color);
+  border: 1px solid rgba(39, 174, 96, 0.2);
+}
+
+.test-result.fail {
+  background: rgba(231, 76, 60, 0.08);
+  color: var(--danger-color);
+  border: 1px solid rgba(231, 76, 60, 0.15);
 }
 
 /* Transition */

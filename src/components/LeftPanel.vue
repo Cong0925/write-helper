@@ -132,6 +132,72 @@ function toggleExpandAll() {
   allExpanded.value = !allExpanded.value
 }
 
+// ── Batch select & move chapters across volumes ──
+const batchMode = ref(false)
+const selectedChapters = ref(new Set<string>())
+const targetVolumePath = ref('')
+
+function toggleBatchMode() {
+  batchMode.value = !batchMode.value
+  if (!batchMode.value) {
+    selectedChapters.value.clear()
+    targetVolumePath.value = ''
+  } else if (volumeEntries.value.length > 0) {
+    targetVolumePath.value = volumeEntries.value[0].path
+  }
+}
+
+function onFileCheck(payload: { path: string; checked: boolean }) {
+  if (payload.checked) {
+    selectedChapters.value.add(payload.path)
+  } else {
+    selectedChapters.value.delete(payload.path)
+  }
+}
+
+async function selectAllInVolume(volPath: string) {
+  try {
+    const { readDirectory } = await import('../api')
+    const files = await readDirectory(volPath)
+    const mdFiles = files.filter(f => !f.isDir && f.name.endsWith('.md')).map(f => f.path)
+
+    const allSelected = mdFiles.length > 0 && mdFiles.every(f => selectedChapters.value.has(f))
+    if (allSelected) {
+      for (const f of mdFiles) selectedChapters.value.delete(f)
+    } else {
+      for (const f of mdFiles) selectedChapters.value.add(f)
+    }
+    selectedChapters.value = new Set(selectedChapters.value)
+  } catch { /* ignore */ }
+}
+
+async function moveSelectedChapters() {
+  if (selectedChapters.value.size === 0 || !targetVolumePath.value) return
+  const count = selectedChapters.value.size
+  if (!confirm(`确定将选中的 ${count} 章移动到目标卷？`)) return
+
+  const { moveItem } = await import('../api')
+  let success = 0
+  let fail = 0
+
+  for (const srcPath of selectedChapters.value) {
+    try {
+      await moveItem(srcPath, targetVolumePath.value)
+      success++
+    } catch {
+      fail++
+    }
+  }
+
+  if (fail > 0) {
+    alert(`移动完成：${success} 章成功，${fail} 章失败（可能是文件名冲突）`)
+  }
+
+  selectedChapters.value.clear()
+  await loadVolumes()
+  if (fail === 0) batchMode.value = false
+}
+
 // Cross-volume drag & drop
 const dragOverVol = ref<string | null>(null)
 
@@ -284,6 +350,7 @@ async function openExportLocation() {
       <div class="panel-section action-section">
         <button class="action-btn primary" @click="handleNewChapter()">＋ 新建章</button>
         <button class="action-btn" @click="handleNewVolume">＋ 新建卷</button>
+        <button class="action-btn" :class="{ active: batchMode }" @click="toggleBatchMode" title="批量选择章节移动分卷">☑ 批量</button>
         <button class="action-btn icon-only" @click="refreshTree" title="刷新目录">↻</button>
       </div>
 
@@ -320,14 +387,18 @@ async function openExportLocation() {
                     :active-volume="appState.activeVolume"
                     :init-editing-path="editingPath"
                     :all-expanded="allExpanded"
+                    :show-checkbox="batchMode"
+                    :checked-set="selectedChapters"
                     @select="setActiveVolume"
                     @refresh="refreshTree"
                     @editing-done="editingPath = ''"
+                    @file-check="onFileCheck"
                     @dragover="onVolDragOver($event, entry.path)"
                     @drop="onVolDrop($event, entry.path)"
                   />
                   <div class="vol-actions">
                     <button class="vol-action-btn" title="新建章节" @click.stop="handleNewChapter(entry.path)">＋</button>
+                    <button v-if="batchMode" class="vol-action-btn select-all-btn" title="全选本章" @click.stop="selectAllInVolume(entry.path)">☑</button>
                     <button class="vol-action-btn" title="更多" @click.stop="showVolMenu(entry, $event)">⋮</button>
                   </div>
                 </div>
@@ -338,11 +409,33 @@ async function openExportLocation() {
         </div>
       </div>
 
-      <!-- Bottom new chapter -->
+      <!-- Bottom: new chapter button (normal) / batch action bar (batch mode) -->
       <div class="panel-section bottom-action">
-        <button class="bottom-new-btn" @click="handleNewChapter()">
-          ＋ 新建章节
-        </button>
+        <template v-if="!batchMode">
+          <button class="bottom-new-btn" @click="handleNewChapter()">
+            ＋ 新建章节
+          </button>
+        </template>
+        <template v-else>
+          <div class="batch-bar">
+            <div class="batch-info">
+              <label class="batch-label">目标卷：</label>
+              <select v-model="targetVolumePath" class="batch-select">
+                <option v-for="ve in volumeEntries" :key="ve.path" :value="ve.path">
+                  {{ ve.name }}
+                </option>
+              </select>
+            </div>
+            <div class="batch-actions">
+              <span class="batch-count">{{ selectedChapters.size }} 章</span>
+              <button
+                class="batch-btn"
+                :disabled="selectedChapters.size === 0 || !targetVolumePath"
+                @click="moveSelectedChapters"
+              >移动</button>
+            </div>
+          </div>
+        </template>
       </div>
     </template>
 
@@ -459,6 +552,11 @@ async function openExportLocation() {
   white-space: nowrap;
 }
 .action-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
+.action-btn.active {
+  background: var(--accent-light);
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+}
 .action-btn.primary {
   background: var(--accent-color);
   color: #fff;
@@ -608,6 +706,84 @@ async function openExportLocation() {
   line-height: 1;
 }
 .vol-action-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
+.vol-action-btn.select-all-btn {
+  font-size: 12px;
+  color: var(--accent-color);
+}
+
+/* Batch mode checkbox (in FileTree) */
+:deep(.batch-checkbox) {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-color);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 0 2px 0 0;
+}
+
+/* Batch action bar */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.batch-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.batch-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.batch-select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+  outline: none;
+  font-family: inherit;
+}
+.batch-select:focus {
+  border-color: var(--accent-color);
+}
+.batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.batch-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-color);
+  white-space: nowrap;
+}
+.batch-btn {
+  height: 28px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent-color);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.12s;
+  font-family: inherit;
+}
+.batch-btn:hover { opacity: 0.85; }
+.batch-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .tree-empty {
   padding: 24px 16px;

@@ -16,12 +16,15 @@ const props = defineProps<{
   activeVolume?: string
   initEditingPath?: string
   allExpanded?: boolean
+  showCheckbox?: boolean
+  checkedSet?: Set<string>
 }>()
 
 const emit = defineEmits<{
   select: [path: string]
   refresh: []
   editingDone: []
+  fileCheck: [payload: { path: string; checked: boolean }]
 }>()
 
 const expanded = ref<Set<string>>(new Set())
@@ -273,6 +276,14 @@ async function onRefresh() {
         <span v-if="entry.isDir" class="toggle-icon">
           {{ expanded.has(entry.path) ? '▼' : '▶' }}
         </span>
+        <input
+          v-if="showCheckbox && !entry.isDir"
+          type="checkbox"
+          class="batch-checkbox"
+          :checked="checkedSet?.has(entry.path)"
+          @change="emit('fileCheck', { path: entry.path, checked: ($event.target as HTMLInputElement).checked })"
+          @click.stop
+        />
         <span class="tree-icon">{{ entry.isDir ? '📁' : '📄' }}</span>
 
         <!-- Inline rename -->
@@ -305,9 +316,12 @@ async function onRefresh() {
         :active-volume="activeVolume"
         :init-editing-path="props.initEditingPath"
         :all-expanded="props.allExpanded"
+        :show-checkbox="showCheckbox"
+        :checked-set="checkedSet"
         @select="(p: string) => emit('select', p)"
         @refresh="emit('refresh')"
         @editing-done="emit('editingDone')"
+        @file-check="(e: any) => emit('fileCheck', e)"
       />
     </template>
 
@@ -420,6 +434,14 @@ async function onRefresh() {
 }
 .tree-action-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
 .tree-action-btn.danger:hover { color: var(--danger-color); background: rgba(231, 76, 60, 0.1); }
+
+.batch-checkbox {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-color);
+  cursor: pointer;
+  flex-shrink: 0;
+}
 
 .inline-rename-input {
   flex: 1;

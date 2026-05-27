@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { appState } from '../store'
 import { openProject, getRecentProjects, removeRecentProject, renameProjectConfig, openInExplorer, deleteProjectFolder } from '../api'
 import type { ProjectInfo } from '../store'
@@ -8,6 +8,29 @@ import OpenProjectModal from './OpenProjectModal.vue'
 import ImportBookModal from './ImportBookModal.vue'
 
 const recentProjects = ref<ProjectInfo[]>([])
+const selectedTab = ref('all')
+
+const filteredProjects = computed(() => {
+  if (selectedTab.value === 'all') return recentProjects.value
+  return recentProjects.value.filter(p => (p.projectType || 'novel') === selectedTab.value)
+})
+
+const typeCounts = computed(() => {
+  const counts: Record<string, number> = { all: recentProjects.value.length }
+  for (const p of recentProjects.value) {
+    const t = p.projectType || 'novel'
+    counts[t] = (counts[t] || 0) + 1
+  }
+  return counts
+})
+
+const typeTabs = computed(() => [
+  { id: 'all', icon: '📋', label: '全部', count: typeCounts.value.all },
+  { id: 'novel', icon: '📖', label: '小说', count: typeCounts.value.novel || 0 },
+  { id: 'wechat_article', icon: '💬', label: '公众号', count: typeCounts.value.wechat_article || 0 },
+  { id: 'toutiao_article', icon: '📰', label: '头条', count: typeCounts.value.toutiao_article || 0 },
+])
+
 const showCreateModal = ref(false)
 const showOpenModal = ref(false)
 const showImportModal = ref(false)
@@ -98,7 +121,7 @@ async function handleOpenInExplorer(project: ProjectInfo, e: MouseEvent) {
       <div class="logo">
         <div class="logo-icon">✍</div>
         <h1>写作助手</h1>
-        <p class="subtitle">本地化小说写作管理工具</p>
+        <p class="subtitle">离线多类型内容创作与管理平台</p>
       </div>
 
       <div class="actions">
@@ -120,11 +143,27 @@ async function handleOpenInExplorer(project: ProjectInfo, e: MouseEvent) {
     <div class="welcome-right">
       <div class="right-header">
         <h2 class="project-list-title">我的项目</h2>
-        <button class="refresh-btn" :disabled="refreshing" @click="loadProjects" title="刷新列表">
-          ↻
+        <button class="refresh-btn" :disabled="refreshing" @click="loadProjects" title="刷新列表">↻</button>
+        <div class="right-header-spacer"></div>
+        <button class="settings-btn" title="设置" @click="appState.showSettings = true">⚙</button>
+      </div>
+
+      <!-- Tab bar -->
+      <div class="tab-bar">
+        <button
+          v-for="tab in typeTabs"
+          :key="tab.id"
+          class="tab-btn"
+          :class="{ active: selectedTab === tab.id }"
+          @click="selectedTab = tab.id"
+        >
+          <span class="tab-icon">{{ tab.icon }}</span>
+          <span>{{ tab.label }}</span>
+          <span class="tab-count">{{ tab.count }}</span>
         </button>
       </div>
-      <div v-if="recentProjects.length === 0 && !refreshing" class="empty-projects">
+
+      <div v-if="filteredProjects.length === 0 && !refreshing" class="empty-projects">
         <span class="empty-icon">📚</span>
         <p>还没有项目，点击左侧新建或打开</p>
       </div>
@@ -134,14 +173,13 @@ async function handleOpenInExplorer(project: ProjectInfo, e: MouseEvent) {
         <p class="loading-text">刷新中...</p>
       </div>
 
-      <div v-else-if="recentProjects.length > 0" class="project-list">
+      <div v-else-if="filteredProjects.length > 0" class="project-list">
         <div
-          v-for="project in recentProjects"
+          v-for="project in filteredProjects"
           :key="project.path"
           class="project-row"
           @click="handleOpenRecent(project)"
         >
-          <div class="project-icon">📖</div>
           <template v-if="renamingProject === project.path">
             <input
               v-model="renameInput"
@@ -344,6 +382,29 @@ h1 {
   cursor: not-allowed;
 }
 
+.right-header-spacer {
+  flex: 1;
+}
+
+.settings-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+.settings-btn:hover {
+  background: var(--hover-bg);
+  color: var(--text-primary);
+}
+
 .empty-projects {
   flex: 1;
   display: flex;
@@ -370,14 +431,58 @@ h1 {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+}
+
+/* Tab bar */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px 10px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 4px;
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.tab-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
+.tab-btn.active {
+  background: var(--accent-color);
+  color: #fff;
+  border-color: var(--accent-color);
+}
+
+.tab-icon { font-size: 13px; }
+
+.tab-count {
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 0 5px;
+  border-radius: 8px;
+  min-width: 16px;
+  text-align: center;
+}
+.tab-btn:not(.active) .tab-count {
+  background: var(--bg-surface);
 }
 
 .project-row {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 14px 16px;
+  padding: 10px 16px 10px 28px;
   border-radius: 10px;
   cursor: pointer;
   transition: background 0.12s;
@@ -385,18 +490,6 @@ h1 {
 
 .project-row:hover {
   background: var(--hover-bg);
-}
-
-.project-icon {
-  font-size: 28px;
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-surface);
-  border-radius: 8px;
 }
 
 .project-info {

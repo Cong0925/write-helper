@@ -1,26 +1,101 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { appState } from '../store'
 
-const upperItems = [
-  { id: 'proofread', icon: '✓', label: '校对' },
+const typePanelSets: Record<string, string[]> = {
+  novel: ['proofread', 'outline', 'characters', 'world', 'material'],
+  wechat_article: ['proofread', 'material'],
+  toutiao_article: ['proofread', 'material'],
+}
+
+const allPanels = [
+  { id: 'proofread', icon: '✓', label: '校对', group: 'upper' },
+  { id: 'outline', icon: '☰', label: '大纲', group: 'lower' },
+  { id: 'characters', icon: '👤', label: '人设', group: 'lower' },
+  { id: 'world', icon: '🌍', label: '设定', group: 'lower' },
+  { id: 'material', icon: '📎', label: '素材', group: 'lower' },
+  { id: 'ai', icon: '🤖', label: 'AI 助手', group: 'ai' },
 ]
 
-const lowerItems = [
-  { id: 'outline', icon: '☰', label: '大纲' },
-  { id: 'characters', icon: '👤', label: '人设' },
-  { id: 'world', icon: '🌍', label: '设定' },
-  { id: 'material', icon: '📎', label: '素材' },
-]
+const allowedPanels = computed(() => {
+  const pt = appState.project?.projectType || 'novel'
+  return typePanelSets[pt] || typePanelSets.novel
+})
+
+const visibleUpper = computed(() => allPanels.filter(p => p.group === 'upper' && allowedPanels.value.includes(p.id)))
+const visibleLower = computed(() => allPanels.filter(p => p.group === 'lower' && allowedPanels.value.includes(p.id)))
+const visibleAi = computed(() => allPanels.filter(p => p.group === 'ai'))
 
 function togglePanel(id: string) {
-  appState.activeSidePanel = appState.activeSidePanel === id ? '' : id
+  if (appState.activeSidePanel !== id) {
+    // Open different panel — preserve current mode
+    appState.activeSidePanel = id
+    // sidePanelMode stays as-is
+  } else if (appState.sidePanelMode === 'float') {
+    // Already open in float → switch to docked
+    appState.sidePanelMode = 'docked'
+  } else {
+    // Already open in docked → close, reset to float
+    appState.activeSidePanel = ''
+    appState.sidePanelMode = 'float'
+  }
+}
+
+const isArticleProject = computed(() => {
+  const pt = appState.project?.projectType || 'novel'
+  return pt === 'wechat_article' || pt === 'toutiao_article'
+})
+
+function triggerAction(action: string) {
+  appState.articlePendingAction = action
+  appState.articleActionStamp++
 }
 </script>
 
 <template>
   <div class="right-panel">
     <button
-      v-for="item in upperItems"
+      v-for="item in visibleUpper"
+      :key="item.id"
+      class="side-btn"
+      :class="{ active: appState.activeSidePanel === item.id }"
+      :title="item.label"
+      @click="togglePanel(item.id)"
+    >
+      <span class="side-icon">{{ item.icon }}</span>
+      <span class="side-label">{{ item.label }}</span>
+    </button>
+    <template v-if="isArticleProject">
+      <button
+        class="side-btn"
+        :class="{ active: appState.articleShowMobilePreview }"
+        title="手机预览"
+        @click="appState.articleShowMobilePreview = !appState.articleShowMobilePreview"
+      >
+        <span class="side-icon">📱</span>
+        <span class="side-label">预览</span>
+      </button>
+      <button
+        class="side-btn"
+        :class="{ active: appState.articleShowQuickTools }"
+        title="快捷工具"
+        @click="appState.articleShowQuickTools = !appState.articleShowQuickTools"
+      >
+        <span class="side-icon">🛠</span>
+        <span class="side-label">工具</span>
+      </button>
+      <button class="side-btn" title="一键复制" @click="triggerAction('copy')">
+        <span class="side-icon">📋</span>
+        <span class="side-label">复制</span>
+      </button>
+      <button class="side-btn" title="清空内容" @click="triggerAction('clear')">
+        <span class="side-icon">🗑</span>
+        <span class="side-label">清空</span>
+      </button>
+    </template>
+    <div class="side-divider" v-if="visibleLower.length > 0"></div>
+    <button
+      v-for="item in visibleLower"
       :key="item.id"
       class="side-btn"
       :class="{ active: appState.activeSidePanel === item.id }"
@@ -32,7 +107,7 @@ function togglePanel(id: string) {
     </button>
     <div class="side-divider"></div>
     <button
-      v-for="item in lowerItems"
+      v-for="item in visibleAi"
       :key="item.id"
       class="side-btn"
       :class="{ active: appState.activeSidePanel === item.id }"

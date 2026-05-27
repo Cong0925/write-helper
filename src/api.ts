@@ -1,8 +1,23 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { ProjectInfo, FileEntry, WordCount, SearchResult } from './store'
+import type { ProjectInfo, FileEntry, WordCount, SearchResult, ProjectTypeDefinition } from './store'
+
+export async function getProjectTypes(): Promise<ProjectTypeDefinition[]> {
+  return invoke<ProjectTypeDefinition[]>('cmd_get_project_types')
+}
 
 export async function createProject(root: string, name: string, description?: string, coverPath?: string): Promise<ProjectInfo> {
   return invoke<ProjectInfo>('cmd_create_project', { root, name, description: description || '', coverPath: coverPath || '' })
+}
+
+export async function createProjectV2(
+  root: string,
+  name: string,
+  description: string,
+  coverPath: string,
+  projectType: string,
+  typeConfig: Record<string, any>,
+): Promise<ProjectInfo> {
+  return invoke<ProjectInfo>('cmd_create_project_v2', { root, name, description, coverPath, projectType, typeConfig })
 }
 
 export async function createImportProject(root: string, name: string): Promise<ProjectInfo> {

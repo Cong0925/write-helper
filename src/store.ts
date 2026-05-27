@@ -7,6 +7,32 @@ export interface ProjectInfo {
   coverPath: string
   createdAt: string
   lastOpenedAt: string
+  version: string
+  projectType: string
+  typeConfig: Record<string, any>
+}
+
+export interface ProjectTypeDefinition {
+  typeId: string
+  displayName: string
+  description: string
+  icon: string
+  version: string
+  directoryTemplate: DirEntry[]
+  defaultFiles: DefaultFile[]
+  editorType: 'code_mirror' | 'tip_tap' | 'mixed'
+  enabledPanels: string[]
+  contentRoot: string
+}
+
+export interface DirEntry {
+  name: string
+  children?: DirEntry[]
+}
+
+export interface DefaultFile {
+  relativePath: string
+  content: string
 }
 
 export interface FileEntry {
@@ -91,8 +117,9 @@ export const appState = reactive({
   fontColor: '',
   paraGap: false,
   firstIndent: false,
-  // Side panel (right side extension)
+  // Side panel
   activeSidePanel: '',
+  sidePanelMode: 'float' as 'float' | 'docked',
   // Background settings panel
   showBgSettings: false,
   lightSkin: 'default',
@@ -103,6 +130,11 @@ export const appState = reactive({
   sensitiveTemplates: [] as { name: string; words: string[] }[],
   // Custom rule groups (自定义纠错)
   customRuleGroups: [{ name: '词库1', enabled: true, rules: [] as RuleItem[] }],
+  // Article editor shared state (for RightPanel integration)
+  articleShowMobilePreview: false,
+  articleShowQuickTools: false,
+  articleActionStamp: 0,
+  articlePendingAction: '',
 })
 
 // Skin palette data

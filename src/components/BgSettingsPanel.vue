@@ -4,10 +4,10 @@ import { appState, lightSkins, darkSkins, getSkinColorById } from '../store'
 import { getConfig, setConfig } from '../api'
 
 const gridStyles = [
-  { id: 'none',  label: '无',     icon: '▢' },
-  { id: 'dots',  label: '点阵',   icon: '⋯' },
-  { id: 'grid',  label: '网格',   icon: '▤' },
-  { id: 'lines', label: '横线',   icon: '≡' },
+  { id: 'none',   label: '无',     icon: '▢' },
+  { id: 'dots',   label: '点阵',   icon: '⋯' },
+  { id: 'dashed', label: '横虚线',  icon: '┅' },
+  { id: 'lines',  label: '横线',   icon: '≡' },
 ]
 
 const currentSkins = computed(() => appState.theme === 'dark' ? darkSkins : lightSkins)

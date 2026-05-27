@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
 import { appState } from '../store'
 import { proofreadText, type ProofreadItem } from '../proofread'
 import { getEditorView } from '../editorHelper'
+import AIPanel from '../ai/AIPanel.vue'
 import SensitiveWordDialog from './SensitiveWordDialog.vue'
 import CustomRuleDialog from './CustomRuleDialog.vue'
 import CharacterPanel from './CharacterPanel.vue'
@@ -16,6 +17,7 @@ const panelTitle = computed(() => {
     characters: '人设',
     world: '设定',
     material: '素材',
+    ai: 'AI 助手',
   }
   return titles[appState.activeSidePanel] || ''
 })
@@ -26,17 +28,30 @@ function doClose() {
 
 /* ---- Panel sizing ---- */
 const isWidePanel = computed(() =>
-  ['outline', 'characters', 'world', 'material'].includes(appState.activeSidePanel)
+  ['outline', 'characters', 'world', 'material', 'ai'].includes(appState.activeSidePanel)
 )
 const panelWidth = computed(() => isWidePanel.value ? 550 : 340)
 
-/* ---- Drag (with top boundary) ---- */
+/* ---- Panel mode ---- */
+const isDocked = computed(() => appState.sidePanelMode === 'docked')
+
+function toggleMode() {
+  appState.sidePanelMode = appState.sidePanelMode === 'float' ? 'docked' : 'float'
+}
+
+const panelStyle = computed(() => {
+  if (isDocked.value) return {}
+  return { left: pos.value.x + 'px', top: pos.value.y + 'px' }
+})
+
+/* ---- Drag (float mode only, with top boundary) ---- */
 const pos = ref({ x: 0, y: 0 })
 let dragging = false
 let startX = 0, startY = 0
 let startPosX = 0, startPosY = 0
 
 function onDragStart(e: MouseEvent) {
+  if (isDocked.value) return
   dragging = true
   startX = e.clientX
   startY = e.clientY
@@ -346,6 +361,12 @@ watch(() => appState.activeSidePanel, (id) => {
   if (!id) return
   pos.value.x = Math.max(0, window.innerWidth - panelWidth.value - 52)
 })
+
+watch(() => appState.sidePanelMode, (mode) => {
+  if (mode === 'float' && appState.activeSidePanel) {
+    pos.value.x = Math.max(0, window.innerWidth - panelWidth.value - 52)
+  }
+})
 </script>
 
 <template>
@@ -353,8 +374,8 @@ watch(() => appState.activeSidePanel, (id) => {
     <div
       v-if="appState.activeSidePanel"
       class="side-panel"
-      :class="{ 'panel-wide': isWidePanel }"
-      :style="{ left: pos.x + 'px', top: pos.y + 'px' }"
+      :class="{ 'panel-wide': isWidePanel, 'panel-docked': isDocked }"
+      :style="panelStyle"
     >
       <!-- Header -->
       <div class="panel-header" @mousedown.prevent="onDragStart">
@@ -362,13 +383,19 @@ watch(() => appState.activeSidePanel, (id) => {
           <template v-if="view === 'result'">{{ panelTitle }}</template>
           <template v-else>敏感词管理</template>
         </span>
-        <button class="panel-close" @click.stop="doClose">✕</button>
+        <div class="header-actions">
+          <button class="mode-btn" :title="isDocked ? '切换为悬浮' : '切换为嵌入'" @click.stop="toggleMode">
+            {{ isDocked ? '🗔' : '📌' }}
+          </button>
+          <button class="panel-close" @click.stop="doClose">✕</button>
+        </div>
       </div>
 
       <!-- ============ View: Result ============ -->
       <template v-if="view === 'result'">
         <div class="panel-body">
           <!-- Folder-based panels -->
+          <AIPanel v-if="appState.activeSidePanel === 'ai'" />
           <CharacterPanel v-if="appState.activeSidePanel === 'characters'" />
           <FolderPanel v-else-if="appState.activeSidePanel === 'outline'" dirName="大纲" />
           <FolderPanel v-else-if="appState.activeSidePanel === 'world'" dirName="设定" />
@@ -568,21 +595,33 @@ watch(() => appState.activeSidePanel, (id) => {
 <style scoped>
 /* ============ Base ============ */
 .side-panel {
-  position: fixed;
   width: 340px;
-  max-height: 90vh;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+/* Float mode: overlay */
+.side-panel:not(.panel-docked) {
+  position: fixed;
+  max-height: 90vh;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
   z-index: 1001;
+}
+/* Docked mode: inline flex item */
+.side-panel.panel-docked {
+  position: relative;
+  flex-shrink: 0;
+  height: 100%;
+  border-left: 1px solid var(--border-color);
 }
 .side-panel.panel-wide {
   width: 550px;
-  height: 80vh;
+}
+.side-panel.panel-wide.panel-docked {
+  height: 100%;
 }
 
 .panel-header {
@@ -592,8 +631,23 @@ watch(() => appState.activeSidePanel, (id) => {
   flex-shrink: 0;
   cursor: grab; user-select: none;
 }
+.panel-docked .panel-header { cursor: default; }
 .panel-header:active { cursor: grabbing; }
+.panel-docked .panel-header:active { cursor: default; }
 .panel-title { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+
+.header-actions {
+  display: flex; align-items: center; gap: 4px;
+}
+
+.mode-btn {
+  width: 28px; height: 28px; border: none; border-radius: 6px;
+  background: transparent; color: var(--text-muted); font-size: 13px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.12s;
+}
+.mode-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
+
 .panel-close {
   width: 28px; height: 28px; border: none; border-radius: 6px;
   background: transparent; color: var(--text-muted); font-size: 14px;
@@ -820,4 +874,10 @@ watch(() => appState.activeSidePanel, (id) => {
 .overlay-panel-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
 .overlay-panel-enter-from,
 .overlay-panel-leave-to { opacity: 0; transform: translateY(-8px); }
+
+/* Docked mode: no fade transition */
+.panel-docked.overlay-panel-enter-active,
+.panel-docked.overlay-panel-leave-active { transition: none; }
+.panel-docked.overlay-panel-enter-from,
+.panel-docked.overlay-panel-leave-to { opacity: 1; transform: none; }
 </style>

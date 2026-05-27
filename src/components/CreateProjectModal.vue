@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { createProject, getConfig, setConfig } from '../api'
+import { createProjectV2, getConfig, setConfig } from '../api'
+import { getProjectTypes } from '../api/project'
 import { appState } from '../store'
+import type { ProjectTypeDefinition } from '../stores/types'
 
 const emit = defineEmits<{ close: [] }>()
+
+// Step state: 'select-type' | 'fill-details'
+const step = ref<'select-type' | 'fill-details'>('select-type')
+const selectedType = ref<ProjectTypeDefinition | null>(null)
+const typeOptions = ref<ProjectTypeDefinition[]>([])
 
 const name = ref('')
 const description = ref('')
@@ -25,7 +32,20 @@ onMounted(async () => {
       hasDefaultDir.value = true
     }
   } catch { /* ignore */ }
+  try {
+    typeOptions.value = await getProjectTypes()
+  } catch { /* ignore */ }
 })
+
+function selectType(type: ProjectTypeDefinition) {
+  selectedType.value = type
+  step.value = 'fill-details'
+}
+
+function backToTypes() {
+  step.value = 'select-type'
+  selectedType.value = null
+}
 
 async function selectSavePath() {
   try {
@@ -49,8 +69,11 @@ async function handleCreate() {
     error.value = '请选择项目保存路径'
     return
   }
+  if (!selectedType.value) {
+    error.value = '请选择项目类型'
+    return
+  }
 
-  // Save as default if user opted in
   if (saveAsDefault.value) {
     try {
       await setConfig('defaultProjectDir', savePath.value)
@@ -59,10 +82,13 @@ async function handleCreate() {
 
   loading.value = true
   try {
-    const project = await createProject(
+    const project = await createProjectV2(
       savePath.value + '/' + name.value.trim(),
       name.value.trim(),
       description.value,
+      '',
+      selectedType.value.typeId,
+      {},
     )
     appState.project = project
     appState.view = 'main'
@@ -73,6 +99,13 @@ async function handleCreate() {
     loading.value = false
   }
 }
+
+function typeIcon(icon: string): string {
+  const map: Record<string, string> = {
+    book: '📖', wechat: '💬', toutiao: '📰',
+  }
+  return map[icon] || '📄'
+}
 </script>
 
 <template>
@@ -80,12 +113,34 @@ async function handleCreate() {
     <div class="modal-card">
       <!-- Header -->
       <div class="modal-header">
-        <h2 class="modal-title">新建作品</h2>
+        <h2 class="modal-title">
+          <template v-if="step === 'select-type'">选择项目类型</template>
+          <template v-else>
+            <button class="back-btn" @click="backToTypes" title="返回选择类型">←</button>
+            新建项目 — {{ selectedType?.displayName }}
+          </template>
+        </h2>
         <button class="close-btn" @click="$emit('close')">✕</button>
       </div>
 
-      <!-- Body -->
-      <div class="modal-body">
+      <!-- Body: Step 1 - Type Selection -->
+      <div v-if="step === 'select-type'" class="modal-body">
+        <div class="type-grid">
+          <div
+            v-for="t in typeOptions"
+            :key="t.typeId"
+            class="type-card"
+            @click="selectType(t)"
+          >
+            <div class="type-icon">{{ typeIcon(t.icon) }}</div>
+            <div class="type-name">{{ t.displayName }}</div>
+            <div class="type-desc">{{ t.description }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Body: Step 2 - Details -->
+      <div v-else class="modal-body">
         <!-- 作品名称 -->
         <div class="form-section">
           <label class="section-label">作品名称</label>
@@ -120,7 +175,7 @@ async function handleCreate() {
 
         <!-- 保存路径 -->
         <div class="form-section">
-          <label class="section-label">保存路径(将当前目录作为后续默认目录，可在设置中修改)</label>
+          <label class="section-label">保存路径</label>
           <div class="path-select-row">
             <input
               :value="savePath"
@@ -141,7 +196,7 @@ async function handleCreate() {
       </div>
 
       <!-- Footer -->
-      <div class="modal-footer">
+      <div class="modal-footer" v-if="step === 'fill-details'">
         <span class="footer-hint">将在选择的位置创建以作品名称命名的文件夹</span>
         <button class="btn-primary" :disabled="loading || !name.trim() || !savePath" @click="handleCreate">
           {{ loading ? '创建中...' : '创建项目' }}
@@ -186,6 +241,24 @@ async function handleCreate() {
   color: var(--text-primary);
 }
 
+.back-btn {
+  background: none;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+  padding: 0;
+  transition: all 0.12s;
+}
+.back-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
+
 .close-btn {
   background: none;
   border: none;
@@ -204,6 +277,46 @@ async function handleCreate() {
 .close-btn:hover {
   background: var(--hover-bg);
   color: var(--text-primary);
+}
+
+/* ===== Type Selection Grid ===== */
+.type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.type-card {
+  padding: 20px 18px;
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s;
+}
+
+.type-card:hover {
+  border-color: var(--accent-color);
+  background: var(--accent-light);
+  transform: translateY(-2px);
+}
+
+.type-icon {
+  font-size: 36px;
+  margin-bottom: 10px;
+}
+
+.type-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.type-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
 .modal-body {

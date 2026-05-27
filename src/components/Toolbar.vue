@@ -15,6 +15,10 @@ function backToWelcome() {
   appState.view = 'welcome'
 }
 
+const typeLabels: Record<string, string> = {
+  novel: '小说', wechat_article: '公众号', toutiao_article: '头条',
+}
+
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
     document.documentElement.requestFullscreen()
@@ -48,8 +52,21 @@ onMounted(() => {
   registerShortcut('toggleFullscreen', toggleFullscreen)
   registerShortcut('toggleFindReplace', toggleFindReplace)
   registerShortcut('formatDoc', formatCurrentDoc)
-  registerShortcut('showOutline', () => { /* 大纲待实现 */ })
-  registerShortcut('showSettingsPanel', () => { appState.showSettings = true })
+  registerShortcut('showOutline', () => {
+    appState.activeSidePanel = appState.activeSidePanel === 'outline' ? '' : 'outline'
+  })
+  registerShortcut('showSettingsPanel', () => {
+    appState.activeSidePanel = appState.activeSidePanel === 'world' ? '' : 'world'
+  })
+  registerShortcut('bossKey', () => {
+    // 老板键: 关闭敏感面板 → 最小化窗口
+    if (appState.activeSidePanel) {
+      appState.activeSidePanel = ''
+    }
+    import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+      getCurrentWindow().minimize()
+    })
+  })
 })
 
 onUnmounted(() => {
@@ -58,6 +75,7 @@ onUnmounted(() => {
   unregisterShortcut('formatDoc')
   unregisterShortcut('showOutline')
   unregisterShortcut('showSettingsPanel')
+  unregisterShortcut('bossKey')
 })
 </script>
 
@@ -69,6 +87,7 @@ onUnmounted(() => {
       </div>
       <div class="divider"></div>
       <span class="project-tab">{{ appState.project?.name || '' }}</span>
+      <span v-if="appState.project?.projectType" class="type-badge">{{ typeLabels[appState.project.projectType] || appState.project.projectType }}</span>
     </div>
 
     <div class="toolbar-center">
@@ -143,6 +162,17 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.type-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent-light);
+  color: var(--accent-color);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .toolbar-center {

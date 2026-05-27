@@ -5,7 +5,9 @@ import { initKeyboardShortcuts } from './useKeyboardShortcuts'
 import Welcome from './components/Welcome.vue'
 import Toolbar from './components/Toolbar.vue'
 import LeftPanel from './components/LeftPanel.vue'
+import ArticleLeftPanel from './components/ArticleLeftPanel.vue'
 import EditorArea from './components/EditorArea.vue'
+import ArticleEditor from './components/ArticleEditor.vue'
 import RightPanel from './components/RightPanel.vue'
 import SidePanel from './components/SidePanel.vue'
 import BottomBar from './components/BottomBar.vue'
@@ -13,6 +15,11 @@ import FindReplace from './components/FindReplace.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import FontSettingsPanel from './components/FontSettingsPanel.vue'
 import BgSettingsPanel from './components/BgSettingsPanel.vue'
+
+const isArticleProject = computed(() => {
+  const pt = appState.project?.projectType || 'novel'
+  return pt === 'wechat_article' || pt === 'toutiao_article'
+})
 
 const themeClass = computed(() => appState.theme === 'dark' ? 'theme-dark' : 'theme-light')
 
@@ -56,14 +63,16 @@ async function loadProofreadData() {
     <div v-else class="app-shell">
       <Toolbar />
       <div class="app-body">
-        <LeftPanel />
-        <EditorArea />
+        <LeftPanel v-if="!isArticleProject" />
+        <EditorArea v-if="!isArticleProject" />
+        <template v-if="isArticleProject">
+          <ArticleLeftPanel />
+          <ArticleEditor />
+        </template>
+        <SidePanel />
         <RightPanel />
       </div>
       <BottomBar />
-
-      <!-- SidePanel: fixed overlay on the right, does not affect layout -->
-      <SidePanel />
     </div>
 
     <!-- Overlay components -->

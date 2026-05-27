@@ -1,6 +1,11 @@
 import { getEditorView } from './editorHelper'
 import { appState } from './store'
 
+function isArticleProject(): boolean {
+  const pt = appState.project?.projectType || 'novel'
+  return pt === 'wechat_article' || pt === 'toutiao_article'
+}
+
 type ShortcutFn = () => void
 
 const actions: Record<string, ShortcutFn> = {}
@@ -57,6 +62,13 @@ export function initKeyboardShortcuts() {
       return
     }
 
+    // Alt+` — boss key (hide window)
+    if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === '`') {
+      e.preventDefault()
+      actions['bossKey']?.()
+      return
+    }
+
     // Ctrl+0 — open settings → shortcuts section
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '0') {
       e.preventDefault()
@@ -65,19 +77,23 @@ export function initKeyboardShortcuts() {
       return
     }
 
-    // Ctrl+1 — outline (stub)
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '1') {
-      e.preventDefault()
-      actions['showOutline']?.()
-      return
-    }
+    // Ctrl+1 — outline (disabled for article projects)
+	if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '1') {
+	  if (!isArticleProject()) {
+	    e.preventDefault()
+	    actions['showOutline']?.()
+	  }
+	  return
+	}
 
-    // Ctrl+2 — settings panel (stub, currently same as Ctrl+0 behavior)
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '2') {
-      e.preventDefault()
-      actions['showSettingsPanel']?.()
-      return
-    }
+    // Ctrl+2 — settings panel (disabled for article projects)
+	if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '2') {
+	  if (!isArticleProject()) {
+	    e.preventDefault()
+	    actions['showSettingsPanel']?.()
+	  }
+	  return
+	}
 
     // Ctrl+F — find/replace
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'f') {
@@ -107,7 +123,7 @@ function insertSeparator() {
   const line = doc.lineAt(from)
   // Insert separator before the current line
   view.dispatch({
-    changes: { from: line.from, to: line.from, insert: '---\n\n' },
+    changes: { from: line.from, to: line.from, insert: '---\n' },
     selection: { anchor: line.from },
   })
   view.focus()
