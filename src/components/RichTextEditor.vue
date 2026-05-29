@@ -15,11 +15,12 @@ import Placeholder from '@tiptap/extension-placeholder'
 import { TextStyle } from '@tiptap/extension-text-style'
 import Color from '@tiptap/extension-color'
 import Highlight from '@tiptap/extension-highlight'
-import { Node, mergeAttributes, Mark } from '@tiptap/core'
-import { NodeSelection, Plugin } from '@tiptap/pm/state'
+import { Node, mergeAttributes, Mark, Extension } from '@tiptap/core'
+import { NodeSelection, TextSelection, Plugin } from '@tiptap/pm/state'
 import type { WordCount } from '../store'
 import { setTiptapEditor } from '../tiptapHelper'
 import { dialog } from '../composables/useDialog'
+import { readFileBase64 } from '../api/files'
 import ImageReplacePanel from './ImageReplacePanel.vue'
 
 const props = defineProps<{
@@ -73,7 +74,10 @@ const Section = Node.create({
 
   addAttributes() {
     return {
-      html: { default: '' },
+      html: {
+        default: '',
+        parseHTML: element => element.innerHTML || '',
+      },
     }
   },
 
@@ -82,7 +86,10 @@ const Section = Node.create({
   },
 
   renderHTML({ node }) {
-    return ['section', { 'data-template': 'true' }, 0]
+    const el = document.createElement('section')
+    el.setAttribute('data-template', 'true')
+    el.innerHTML = node.attrs.html as string
+    return el
   },
 
   addNodeView() {
@@ -103,6 +110,16 @@ const Section = Node.create({
       })
 
       el.addEventListener('keydown', (e) => {
+        // Ctrl+A — select all in the full editor, not just inside this section
+        if (e.ctrlKey && e.key === 'a') {
+          e.preventDefault()
+          const { view } = editor
+          const { state } = view
+          const sel = new TextSelection(state.doc.resolve(0), state.doc.resolve(state.doc.content.size))
+          view.dispatch(state.tr.setSelection(sel))
+          view.focus()
+          return
+        }
         e.stopPropagation()
       })
 
@@ -115,6 +132,11 @@ const Section = Node.create({
           return true
         },
         stopEvent: () => true,
+        // Ignore all DOM mutations — content inside atom nodes is NOT
+        // managed by ProseMirror. Without this, DOMObserver will try to
+        // reconcile mutations (typing, image clicks, etc.) against the
+        // ProseMirror document, corrupting the node's content and losing images.
+        ignoreMutation: () => true,
       }
     }
   },
@@ -157,37 +179,110 @@ const EditableImage = Image.extend({
       new Plugin({
         props: {
           handleDOMEvents: {
-            dblclick: async (view, event) => {
+            click: (view, event) => {
               const target = event.target as HTMLElement
-              if (target.tagName === 'IMG') {
-                const currentSrc = target.getAttribute('src') || ''
-                imagePanelSrc.value = currentSrc
-                imagePanelShow.value = true
-                const newSrc = await new Promise<string | null>((resolve) => {
-                  imagePanelCb = resolve
-                })
-                if (newSrc && newSrc !== currentSrc) {
-                  // Find image node position in the document
-                  const pos = view.posAtDOM(target, 0)
-                  if (pos !== null) {
-                    // Search around the DOM position for the image node
-                    for (let i = Math.max(0, pos - 3); i <= pos + 3; i++) {
-                      const node = view.state.doc.nodeAt(i)
-                      if (node?.type.name === 'image') {
-                        const tr = view.state.tr.setNodeMarkup(i, undefined, {
-                          ...node.attrs,
-                          src: newSrc,
-                        })
-                        view.dispatch(tr)
-                        break
-                      }
+              if (target.tagName !== 'IMG') return false
+              const src = target.getAttribute('src') || ''
+              const isPlaceholder = src.includes('/images/carousel-') && src.endsWith('.svg')
+              const isInCarousel = !isPlaceholder && !!target.closest('[style*="carouselAnim"], [style*="min-width:33.333%"]')
+              if (isPlaceholder || isInCarousel) {
+                // Collect all carousel images and dispatch a custom event
+                const allImgs = view.dom.querySelectorAll('img')
+                const srcs: string[] = []
+                for (const imgEl of allImgs) {
+                  const s = imgEl.getAttribute('src') || ''
+                  if (s.includes('/images/carousel-') || imgEl.closest('[style*="carouselAnim"], [style*="min-width:33.333%"]')) {
+                    if (!srcs.includes(s)) srcs.push(s)
+                  }
+                }
+                const defaults = ['/images/carousel-1.svg', '/images/carousel-2.svg', '/images/carousel-3.svg']
+                while (srcs.length < 3) srcs.push(defaults[srcs.length])
+                view.dom.dispatchEvent(new CustomEvent('carousel-click', { bubbles: true, detail: srcs.slice(0, 3) }))
+                return true
+              }
+
+              imagePanelSrc.value = src
+              imagePanelShow.value = true
+              imagePanelCb = null
+              new Promise<string | null>((resolve) => { imagePanelCb = resolve }).then((newSrc) => {
+                if (!newSrc || newSrc === src) return
+                const pos = view.posAtDOM(target, 0)
+
+                // Try normal path: image is a regular ProseMirror node
+                if (pos !== null && pos !== undefined) {
+                  for (let i = Math.max(0, pos - 5); i <= pos + 5; i++) {
+                    const node = view.state.doc.nodeAt(i)
+                    if (node?.type.name === 'image' && node.attrs.src === src) {
+                      view.dispatch(view.state.tr.setNodeMarkup(i, undefined, { ...node.attrs, src: newSrc }))
+                      break
+                    }
+                  }
+                  return
+                }
+
+                // Fallback: image is inside a Section atom node (raw HTML).
+                // Update the live DOM directly, then sync to the section node's
+                // html attribute via the nodeView's own input handler.
+                const sectionEl = target.closest('section[data-template]') as HTMLElement | null
+                if (!sectionEl) return
+                target.setAttribute('src', newSrc)
+                sectionEl.dispatchEvent(new Event('input', { bubbles: true }))
+              })
+              return true
+            },
+          },
+        },
+      }),
+    ]
+  },
+})
+
+/* ── SectionProtection — prevents accidental backspace/delete from removing Section atom nodes ── */
+const SectionProtection = Extension.create({
+  name: 'sectionProtection',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        props: {
+          handleKeyDown: (view, event) => {
+            if (event.key !== 'Backspace' && event.key !== 'Delete') return false
+            const { selection } = view.state
+            // Only block when cursor is empty (no explicit NodeSelection or text selection)
+            if (!selection.empty) return false
+            if (!('$from' in selection)) return false
+
+            const { $from } = selection
+            const isBackspace = event.key === 'Backspace'
+
+            if (isBackspace) {
+              // Cursor at start of a block: check if previous sibling is a Section
+              if ($from.parentOffset === 0) {
+                for (let i = $from.depth; i > 0; i--) {
+                  if ($from.index(i) > 0) {
+                    const prev = $from.node(i).child($from.index(i) - 1)
+                    if (prev?.type.name === 'section') {
+                      event.preventDefault()
+                      return true
                     }
                   }
                 }
-                return true
               }
-              return false
-            },
+            } else {
+              // Delete key: check if next sibling is a Section
+              for (let i = $from.depth; i > 0; i--) {
+                const parent = $from.node(i)
+                const afterIdx = $from.indexAfter(i)
+                if (afterIdx < parent.childCount) {
+                  const next = parent.child(afterIdx)
+                  if (next?.type.name === 'section') {
+                    event.preventDefault()
+                    return true
+                  }
+                }
+              }
+            }
+
+            return false
           },
         },
       }),
@@ -221,12 +316,15 @@ const editor = useEditor({
     SpanStyle,
     Section,
     Div,
+    SectionProtection,
   ],
   onCreate: ({ editor: ed }) => {
-    ed.view.dom.addEventListener('copy', handleCopy)
+    ed.view.dom.addEventListener('paste', handlePaste)
+    setTiptapEditor(ed)
   },
   onDestroy: (props?: { editor: any }) => {
-    try { props?.editor?.view?.dom?.removeEventListener('copy', handleCopy) } catch {}
+    try { props?.editor?.view?.dom?.removeEventListener('paste', handlePaste) } catch {}
+    setTiptapEditor(null)
   },
   onUpdate: ({ editor: ed }) => {
     const html = ed.getHTML()
@@ -245,14 +343,13 @@ function scheduleWordCount(ed: any) {
 
 function doWordCount(ed: any) {
   _wcTimer = null
-  // Use ProseMirror's textBetween — zero HTML overhead
-  const doc = ed.state.doc
-  const raw = doc.textBetween(0, doc.content.size, '\n', ' ')
+  // Use DOM textContent because atom:true section nodes are invisible to ProseMirror's textBetween
+  const raw = (ed.view.dom as HTMLElement).textContent || ''
   const text = raw.replace(/\s+/g, ' ').trim()
   const chars = [...text]
   const totalChars = chars.filter(c => c !== ' ').length
   const chineseChars = chars.filter(c => c >= '\u{4e00}' && c <= '\u{9fff}').length
-  const lines = text === '' ? 0 : text.split(/\n+/).filter(l => l.trim()).length
+  const lines = raw.trim() === '' ? 0 : raw.trim().split(/\n+/).filter((l: string) => l.trim()).length
   emit('wordCount', { totalChars, chineseChars, words: totalChars, lines })
 }
 
@@ -395,9 +492,15 @@ function insertHtml(html: string) {
     htmlCode.value = htmlCode.value.slice(0, pos) + '\n' + html + htmlCode.value.slice(pos)
     return
   }
-  // Parse through ProseMirror: Div preserves block styles, SpanStyle preserves inline styles
-  // Content is fully editable with all toolbar operations (bold, color, font size, etc.)
-  editor.value.chain().focus().insertContent(html + '<p><br></p>').run()
+    // Only wrap in Section atom node when the template contains <style> tags
+  // (carousel keyframes, animated footers) that ProseMirror would strip.
+  // For all other templates, insert directly as parseable HTML so the
+  // content is fully editable (not trapped in an atom node).
+  if (html.includes('<style>')) {
+    editor.value.chain().focus().insertContent(`<section data-template="true">${html}</section><p><br></p>`).run()
+  } else {
+    editor.value.chain().focus().insertContent(html).run()
+  }
 }
 
 // Insert inline content (single character / inline text) without trailing blank paragraph
@@ -422,7 +525,10 @@ function getHtml(): string {
 
   doc.forEach((node) => {
     if (node.type.name === 'section') {
-      parts.push((node.attrs.html as string) || '')
+      // Wrap in <section data-template="true"> so that setContent() on save/load
+      // re-creates Section nodes instead of re-parsing into Div+Image (which
+      // produces empty <p> wrappers and drops <style> tags).
+      parts.push(`<section data-template="true">${node.attrs.html}</section>`)
     } else {
       const div = document.createElement('div')
       div.appendChild(serializer.serializeNode(node))
@@ -438,6 +544,21 @@ function getContentLength(): number {
   const html = getHtml()
   const text = html.replace(/<[^>]*>/g, '').trim()
   return [...text].length
+}
+
+// Get rendered HTML from the editor's live DOM for clipboard copy.
+// Reads from the actual browser-rendered DOM (editor.view.dom.innerHTML)
+// instead of ProseMirror's DOMSerializer, so Section atom nodes preserve
+// their raw template HTML faithfully and no double-serialization occurs.
+function getHtmlForCopy(): string {
+  if (!editor.value) return ''
+  if (showHtmlView.value) return htmlCode.value
+  let html = editor.value.view.dom.innerHTML
+    // Strip ProseMirror internal artifacts
+    .replace(/<span class="ProseMirror-trailingBreak"><\/span>/g, '')
+    .replace(/\sdata-pm-slice="[^"]*"/g, '')
+    .replace(/ contenteditable="true"/g, '')
+  return html
 }
 
 // Set content
@@ -492,10 +613,67 @@ function convertViaIframe(html: string): string {
   return result
 }
 
-// Copy all content — convert div→section, then Clipboard API
-function copyContent() {
+// ─── Helper: convert local image file paths in HTML to base64 data URLs ───
+// This lets Toutiao/WeChat's editors auto-upload images when pasting.
+async function replaceLocalImagesWithBase64(html: string): Promise<string> {
+  const div = document.createElement('div')
+  div.innerHTML = html
+  const imgs = div.querySelectorAll('img')
+  if (imgs.length === 0) return html
+
+  const mimeMap: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+    bmp: 'image/bmp', ico: 'image/x-icon',
+  }
+
+  const tasks: Promise<void>[] = []
+
+  imgs.forEach(img => {
+    const src = img.getAttribute('src') || ''
+    // Skip non-local paths (already data URLs or remote URLs)
+    if (!src || src.startsWith('data:') || src.startsWith('http://') || src.startsWith('https://')) return
+
+    const ext = src.split('.').pop()?.toLowerCase() || ''
+    const mime = mimeMap[ext] || 'image/png'
+
+    tasks.push(
+      readFileBase64(src)
+        .then(b64 => { img.setAttribute('src', `data:${mime};base64,${b64}`) })
+        .catch(() => { /* keep original src if file read fails */ })
+    )
+  })
+
+  if (tasks.length === 0) return html
+  await Promise.all(tasks)
+  return div.innerHTML
+}
+
+// ─── Check if there are any unreplaced default SVG placeholders ───
+function hasUnreplacedPlaceholders(): boolean {
+  if (!editor.value) return false
   const html = getHtml()
-  const converted = convertViaIframe(html)
+  const div = document.createElement('div')
+  div.innerHTML = html
+  const imgs = div.querySelectorAll('img')
+  for (const img of imgs) {
+    const src = img.getAttribute('src') || ''
+    // All built-in template SVGs live under /images/
+    if (src.startsWith('/images/')) return true
+  }
+  return false
+}
+
+// Copy all content — convert local images to data URL → convert div→section, then Clipboard API
+async function copyContent() {
+  // Guard: check for unreplaced placeholder images
+  if (hasUnreplacedPlaceholders()) {
+    dialog.alert('当前内容中包含未替换的默认占位图（/images/ 开头的 SVG），请先点击图片替换后再复制。')
+    return
+  }
+  const html = getHtmlForCopy()
+  const withDataUrls = await replaceLocalImagesWithBase64(html)
+  const converted = convertViaIframe(withDataUrls)
   const div = document.createElement('div')
   div.innerHTML = converted
   const text = div.textContent || ''
@@ -506,10 +684,12 @@ function copyContent() {
       'text/plain': new Blob([text], { type: 'text/plain' }),
     }),
   ]).then(() => {
+    copiedTipMsg.value = '已复制到剪贴板'
     showCopiedTip.value = true
     setTimeout(() => showCopiedTip.value = false, 2000)
   }).catch(() => {
     navigator.clipboard.writeText(text).then(() => {
+      copiedTipMsg.value = '已复制到剪贴板'
       showCopiedTip.value = true
       setTimeout(() => showCopiedTip.value = false, 2000)
     }).catch(() => { /* clipboard unavailable */ })
@@ -517,6 +697,7 @@ function copyContent() {
 }
 
 const showCopiedTip = ref(false)
+const copiedTipMsg = ref('已复制到剪贴板')
 
 // Image replace panel state
 const imagePanelShow = ref(false)
@@ -561,54 +742,146 @@ function removeColor() {
 // Replace carousel placeholder images with uploaded data URLs
 function replaceCarouselImages(dataUrls: string[]) {
   if (!editor.value || dataUrls.length !== 3) return
+  const placeholders = ['/images/carousel-1.svg', '/images/carousel-2.svg', '/images/carousel-3.svg']
+
   if (showHtmlView.value) {
     let html = htmlCode.value
-    const placeholders = ['/images/carousel-1.svg', '/images/carousel-2.svg', '/images/carousel-3.svg']
     for (let i = 0; i < 3; i++) {
       html = html.split(placeholders[i]).join(dataUrls[i])
     }
     htmlCode.value = html
     return
   }
-  const currentHtml = editor.value.getHTML()
-  const placeholders = ['/images/carousel-1.svg', '/images/carousel-2.svg', '/images/carousel-3.svg']
-  let newHtml = currentHtml
-  for (let i = 0; i < 3; i++) {
-    newHtml = newHtml.split(placeholders[i]).join(dataUrls[i])
+
+  // Walk document and update image src references directly in the ProseMirror model.
+  // Handles two cases:
+  //   a) Section node (atom, raw HTML in attrs.html) — string replace in the HTML
+  //   b) Image node (standalone, attrs.src) — setNodeMarkup to change src
+  const tr = editor.value.state.tr
+  let needsUpdate = false
+
+  editor.value.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'section') {
+      let html = node.attrs.html as string
+      let changed = false
+      for (let i = 0; i < 3; i++) {
+        if (html.includes(placeholders[i])) {
+          html = html.split(placeholders[i]).join(dataUrls[i])
+          changed = true
+        }
+      }
+      if (changed) {
+        tr.setNodeMarkup(pos, undefined, { ...node.attrs, html })
+        needsUpdate = true
+      }
+    } else if (node.type.name === 'image') {
+      const src = node.attrs.src as string
+      const idx = placeholders.indexOf(src)
+      if (idx >= 0) {
+        tr.setNodeMarkup(pos, undefined, { ...node.attrs, src: dataUrls[idx] })
+        needsUpdate = true
+      }
+    }
+  })
+
+  if (needsUpdate) {
+    editor.value.view.dispatch(tr)
   }
-  editor.value.commands.setContent(newHtml, false)
 }
 
 // Expose for parent
-defineExpose({ insertHtml, insertInline, getHtml, setContent, clearContent, copyContent, getContentLength, replaceCarouselImages })
+defineExpose({ insertHtml, insertInline, getHtml, setContent, clearContent, copyContent, getContentLength, replaceCarouselImages, cutSelection })
 
-// Custom copy handler: preserve full HTML styles (color, highlight, etc.)
-function handleCopy(event: ClipboardEvent) {
-  if (!editor.value) return
+function getSelectedHtml(): string {
+  if (!editor.value) return ''
+  const { state } = editor.value
+  const sel = state.selection as any
 
-  // Template sections: contenteditable handles text edits; let browser copy the rendered DOM natively
-  const target = event.target as HTMLElement
-  if (target.closest('[data-template]')) return
-
-  // Any selection containing template sections: use full-doc HTML to preserve raw styles
-  const sel = editor.value.state.selection as any
+  // Whole section node selected
   if (sel.node?.type?.name === 'section') {
-    event.preventDefault()
-    const raw = sel.node.attrs.html
-    const tmp = document.createElement('div')
-    tmp.innerHTML = raw
-    const text = tmp.textContent || ''
-    event.clipboardData?.setData('text/html', raw)
-    event.clipboardData?.setData('text/plain', text.replace(/\s+/g, ' ').trim())
-    showCopiedTip.value = true
-    setTimeout(() => showCopiedTip.value = false, 2000)
-    return
+    return sel.node.attrs.html as string
   }
 
-  // For all other cases: let the browser copy the rendered DOM natively.
-  // This preserves all inline styles faithfully (same mechanism as 135/365 editors).
-  // Don't call preventDefault — browser's native DOM serialization handles it.
-  return
+  // Text selection: serialize ProseMirror slice to HTML
+  if (sel.empty) return ''
+  const { from, to } = state.selection
+  const slice = state.doc.slice(from, to)
+  const div = document.createElement('div')
+  DOMSerializer.fromSchema(state.schema).serializeFragment(slice.content, {}, div)
+  return div.innerHTML
+}
+
+async function writeToClipboard(html: string): Promise<void> {
+  const withDataUrls = await replaceLocalImagesWithBase64(html)
+  const converted = convertViaIframe(withDataUrls)
+  const tmp = document.createElement('div')
+  tmp.innerHTML = converted
+  const text = tmp.textContent || ''
+  return navigator.clipboard.write([
+    new ClipboardItem({
+      'text/html': new Blob([converted], { type: 'text/html' }),
+      'text/plain': new Blob([text], { type: 'text/plain' }),
+    }),
+  ])
+}
+
+async function doCopy(): Promise<boolean> {
+  if (!editor.value) return false
+  const html = getSelectedHtml()
+  if (!html) return false
+  try {
+    await writeToClipboard(html)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function cutSelection() {
+  if (!editor.value) return
+  const html = getSelectedHtml()
+  if (!html) return
+  try {
+    await writeToClipboard(html)
+    editor.value.chain().focus().deleteSelection().run()
+    copiedTipMsg.value = '已剪切到剪贴板'
+    showCopiedTip.value = true
+    setTimeout(() => showCopiedTip.value = false, 2000)
+  } catch {
+    // clipboard write failed — don't delete
+  }
+}
+
+function handlePaste(event: ClipboardEvent) {
+  if (!editor.value) return
+  const items = event.clipboardData?.items
+  if (!items) return
+
+  const imageItems: DataTransferItem[] = []
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].type.startsWith('image/')) {
+      imageItems.push(items[i])
+    }
+  }
+
+  if (imageItems.length === 0) return
+
+  event.preventDefault()
+
+  let chain = Promise.resolve()
+  for (const item of imageItems) {
+    const blob = item.getAsFile()
+    if (!blob) continue
+    chain = chain.then(() => new Promise<void>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        editor.value?.chain().focus().setImage({ src: reader.result as string }).run()
+        resolve()
+      }
+      reader.onerror = () => resolve()
+      reader.readAsDataURL(blob!)
+    }))
+  }
 }
 
 onBeforeUnmount(() => {
@@ -747,7 +1020,7 @@ onUnmounted(() => {
     <!-- Copied tip -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="showCopiedTip" class="copied-tip">已复制到剪贴板</div>
+        <div v-if="showCopiedTip" class="copied-tip">{{ copiedTipMsg }}</div>
       </Transition>
     </Teleport>
 

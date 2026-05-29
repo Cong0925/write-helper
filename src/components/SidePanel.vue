@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
-import { appState } from '../store'
-import { proofreadText, type ProofreadItem } from '../proofread'
+import { appState, articleProjectTypes } from '../store'
+import { proofreadText, aiProofread, type ProofreadItem, type AIProofreadResult, type AIProofreadConfig } from '../proofread'
 import { getEditorView } from '../editorHelper'
+import { getTiptapEditor } from '../tiptapHelper'
+import { getKeyStatuses, getSavedKeys } from '../api/ai'
+import { getConfig } from '../api/config'
 import AIPanel from '../ai/AIPanel.vue'
 import SensitiveWordDialog from './SensitiveWordDialog.vue'
 import CustomRuleDialog from './CustomRuleDialog.vue'
@@ -127,21 +130,67 @@ const dialogAnchor = computed(() => ({
   y: pos.value.y,
 }))
 
+/* ---- Project type ---- */
+const articleProjectTypesArr = articleProjectTypes as readonly string[]
+const isArticleProject = computed(() => {
+  const pt = appState.project?.projectType || ''
+  return articleProjectTypesArr.includes(pt)
+})
+const hasContent = computed(() => !!appState.currentFile?.path)
+
 /* ---- Per-module state ---- */
 interface ModuleState {
   status: 'idle' | 'loading' | 'clean' | 'issues'
   items: ProofreadItem[]
   ignored: number[]
+  cached?: boolean
 }
 
 function freshModule(): ModuleState {
-  return { status: 'idle', items: [], ignored: [] }
+  return { status: 'idle', items: [], ignored: [], cached: false }
 }
 
 const typoMod = reactive<ModuleState>(freshModule())
 const sensitiveMod = reactive<ModuleState>(freshModule())
 const formatMod = reactive<ModuleState>(freshModule())
 const customMod = reactive<ModuleState>(freshModule())
+const grammarMod = reactive<ModuleState>(freshModule())
+
+/* ---- AI detection state ---- */
+const hasAIConfig = ref(false)
+const aiEnabled = ref(false)
+const aiConfig = ref<AIProofreadConfig>({ providerId: '', model: '', endpoint: '' })
+const aiDetectCache = new Map<string, { text: string; items: AIProofreadResult[] }>()
+
+function getAICache(filePath: string, text: string): AIProofreadResult[] | null {
+  const cached = aiDetectCache.get(filePath)
+  if (!cached) return null
+  if (cached.text === text) return cached.items
+  const valid = cached.items.filter(item => item.wrong && text.includes(item.wrong))
+  return valid.length ? valid : null
+}
+
+function setAICache(filePath: string, text: string, items: AIProofreadResult[]) {
+  aiDetectCache.set(filePath, { text, items })
+}
+
+async function loadAIConfig() {
+  try {
+    const statuses = await getKeyStatuses()
+    hasAIConfig.value = Object.values(statuses).some(v => v)
+    if (!hasAIConfig.value) return
+    const savedKeys = await getSavedKeys()
+    const activeProvider = await getConfig('activeAiProvider').catch(() => '')
+    let targetKey = savedKeys.find(sk => sk.providerId === activeProvider)
+    if (!targetKey) targetKey = savedKeys.find(sk => sk.hasKey)
+    if (!targetKey) return
+    aiConfig.value = {
+      providerId: targetKey.providerId,
+      model: targetKey.defaultModel,
+      endpoint: targetKey.endpoint,
+    }
+  } catch { hasAIConfig.value = false }
+}
 
 /* ---- Clear detection on file switch ---- */
 watch(() => appState.currentFile?.path, () => {
@@ -149,6 +198,7 @@ watch(() => appState.currentFile?.path, () => {
   Object.assign(sensitiveMod, freshModule())
   Object.assign(formatMod, freshModule())
   Object.assign(customMod, freshModule())
+  Object.assign(grammarMod, freshModule())
 })
 
 const visibleTypos = computed(() =>
@@ -160,6 +210,9 @@ const visibleSensitive = computed(() =>
 const visibleCustom = computed(() =>
   customMod.items.filter((_, i) => !customMod.ignored.includes(i))
 )
+const visibleGrammar = computed(() =>
+  grammarMod.items.filter((_, i) => !grammarMod.ignored.includes(i))
+)
 
 /* ---- Status text ---- */
 function statusText(mod: ModuleState): string {
@@ -170,19 +223,59 @@ function statusText(mod: ModuleState): string {
   return `${shown} 个问题`
 }
 
+/* ── Get current editor plain text (works for CodeMirror novels and TipTap articles) ── */
+function getCurrentText(): string {
+  if (isArticleProject.value) {
+    const editor = getTiptapEditor()
+    if (editor) return editor.state.doc.textContent
+    const raw = appState.currentContent || ''
+    return raw.replace(/<[^>]*>/g, '').trim()
+  }
+  const view = getEditorView()
+  if (view) return view.state.doc.toString()
+  return ''
+}
+
 /* ---- Run single module check ---- */
-function runModuleCheck(mod: ModuleState, type: 'typo' | 'sensitive' | 'format' | 'custom') {
-  const editorView = getEditorView()
-  if (!editorView) return
-  const text = editorView.state.doc.toString()
+async function runModuleCheck(mod: ModuleState, type: 'typo' | 'sensitive' | 'format' | 'custom' | 'grammar') {
+  const text = getCurrentText()
+  if (!text) return
   mod.status = 'loading'
 
-  const opts = { typo: type === 'typo', sensitive: type === 'sensitive', format: type === 'format', custom: type === 'custom', grammar: false }
+  if (aiEnabled.value && hasAIConfig.value && aiConfig.value.providerId) {
+    await runAIModuleCheck(mod, type, text)
+  } else {
+    runLocalModuleCheck(mod, type, text)
+  }
+}
 
+async function runAIModuleCheck(mod: ModuleState, type: string, text: string) {
+  const aiType = type as 'typo' | 'grammar' | 'format' | 'sensitive'
+  const items = await aiProofread(text, aiConfig.value, [aiType], aiType === 'sensitive' ? appState.sensitiveWords : undefined)
+  const mapped: ProofreadItem[] = items.map(ai => ({
+    type: aiType,
+    message: ai.message,
+    detail: ai.message,
+    line: 0, col: 0, lineNum: 0, colNum: 0,
+    wrong: ai.wrong,
+    correct: ai.correct,
+    fixed: ai.fixed,
+    confidence: 'medium' as const,
+  }))
+  if (getCurrentFilePath()) {
+    mod.items = mapped.filter(item => !isIgnored(item))
+  } else {
+    mod.items = mapped
+  }
+  mod.ignored = []
+  mod.status = mod.items.length === 0 ? 'clean' : 'issues'
+}
+
+function runLocalModuleCheck(mod: ModuleState, type: string, text: string) {
+  const opts = { typo: type === 'typo', sensitive: type === 'sensitive', format: type === 'format', custom: type === 'custom', grammar: type === 'grammar' }
   setTimeout(() => {
     const r = proofreadText(text, appState.sensitiveWords, appState.customRuleGroups, opts)
-    let items = type === 'typo' ? r.typos : type === 'sensitive' ? r.sensitive : type === 'format' ? r.format : r.custom
-    // Filter out persistently ignored items
+    let items = type === 'typo' ? r.typos : type === 'sensitive' ? r.sensitive : type === 'format' ? r.format : type === 'grammar' ? r.grammar : r.custom
     if (getCurrentFilePath()) {
       items = items.filter(item => !isIgnored(item))
     }
@@ -194,17 +287,50 @@ function runModuleCheck(mod: ModuleState, type: 'typo' | 'sensitive' | 'format' 
 
 /* ---- Jump to item with selection highlight ---- */
 function jumpToItem(item: ProofreadItem) {
+  const searchText = item.wrong
+  if (!searchText) return
+
+  if (isArticleProject.value) {
+    // TipTap editor (article projects)
+    const editor = getTiptapEditor()
+    if (!editor) return
+    const text = editor.state.doc.textContent
+    const idx = text.indexOf(searchText)
+    if (idx >= 0) {
+      editor.commands.setTextSelection({ from: idx, to: idx + searchText.length })
+    }
+    return
+  }
+
+  // CodeMirror editor (novel projects)
   const view = getEditorView()
   if (!view) return
-  const lineInfo = view.state.doc.line(item.lineNum)
-  if (!lineInfo) return
-  const from = lineInfo.from + item.colNum - 1
-  const to = item.wrong ? from + item.wrong.length : from
-  view.dispatch({
-    selection: { anchor: from, head: to || from },
-    scrollIntoView: true,
-  })
-  view.focus()
+
+  // For AI results (lineNum=0) or when wrong text exists: search by text
+  const text = view.state.doc.toString()
+  const idx = text.indexOf(searchText)
+  if (idx >= 0) {
+    view.dispatch({
+      selection: { anchor: idx, head: idx + searchText.length },
+      scrollIntoView: true,
+    })
+    view.focus()
+    return
+  }
+
+  // Fallback: use line/col (local detection results)
+  if (item.lineNum >= 1) {
+    try {
+      const lineInfo = view.state.doc.line(item.lineNum)
+      const from = lineInfo.from + Math.max(0, item.colNum - 1)
+      const to = item.wrong ? from + item.wrong.length : from
+      view.dispatch({
+        selection: { anchor: from, head: to || from },
+        scrollIntoView: true,
+      })
+      view.focus()
+    } catch { /* ignore */ }
+  }
 }
 
 /* ---- Ignore ---- */
@@ -237,19 +363,37 @@ async function ignorePermanently(mod: ModuleState, item: ProofreadItem) {
   } catch { /* ignore */ }
 }
 
+/* ── Helper: apply text replacement by searching for wrong text ── */
+function applyTextReplace(wrong: string, replacement: string): boolean {
+  if (isArticleProject.value) {
+    const editor = getTiptapEditor()
+    if (!editor) return false
+    const text = editor.state.doc.textContent
+    const idx = text.indexOf(wrong)
+    if (idx < 0) return false
+    editor.chain().setTextSelection({ from: idx, to: idx + wrong.length })
+      .deleteSelection().insertContent(replacement).run()
+    return true
+  }
+  const view = getEditorView()
+  if (!view) return false
+  const text = view.state.doc.toString()
+  const idx = text.indexOf(wrong)
+  if (idx < 0) return false
+  view.dispatch({ changes: { from: idx, to: idx + wrong.length, insert: replacement } })
+  return true
+}
+
 /* ---- Apply fixes ---- */
 function applyFix(mod: ModuleState, item: ProofreadItem) {
-  if (!item.wrong || !item.correct) return
-  const view = getEditorView()
-  if (!view) return
-  const lineInfo = view.state.doc.line(item.lineNum)
-  if (!lineInfo) return
-  const from = lineInfo.from + item.colNum - 1
-  const to = from + item.wrong.length
-  view.dispatch({ changes: { from, to, insert: item.correct } })
-  view.focus()
-  // Remove from visible list after applying
-  ignoreItem(mod, item)
+  if (!item.wrong) return
+  // AI results: use fixed (full replacement); local results: use correct
+  const replacement = item.fixed || item.correct
+  if (!replacement) return
+
+  if (applyTextReplace(item.wrong, replacement)) {
+    ignoreItem(mod, item)
+  }
 }
 
 const nonIgnoredTypos = computed(() =>
@@ -257,23 +401,88 @@ const nonIgnoredTypos = computed(() =>
 )
 
 function applyAllFixes() {
-  const view = getEditorView()
-  if (!view) return
-  const sorted = [...nonIgnoredTypos.value].sort((a, b) => (b.lineNum - a.lineNum) || (b.colNum - a.colNum))
-  const changes = sorted.map(item => {
-    if (!item.wrong || !item.correct) return null
-    const lineInfo = view.state.doc.line(item.lineNum)
-    if (!lineInfo) return null
-    const from = lineInfo.from + item.colNum - 1
-    const to = from + item.wrong.length
-    return { changes: { from, to, insert: item.correct } }
-  }).filter((x): x is NonNullable<typeof x> => x != null)
-  if (!changes.length) return
-  view.dispatch(...changes)
-  view.focus()
-  // Mark all as ignored
-  typoMod.ignored = nonIgnoredTypos.value.map((_, i) => i)
+  const items = nonIgnoredTypos.value
+  if (!items.length) return
+
+  // Process in reverse order to preserve positions
+  const reversed = [...items].reverse()
+  for (const item of reversed) {
+    const replacement = item.fixed || item.correct
+    if (!item.wrong || !replacement) continue
+    applyTextReplace(item.wrong, replacement)
+  }
+  typoMod.ignored = items.map((_, i) => i)
   typoMod.status = 'clean'
+}
+
+/* ── Full-text detection ── */
+async function runFullTextCheck() {
+  const text = getCurrentText()
+  if (!text) return
+
+  const resetAll = () => {
+    for (const m of [typoMod, sensitiveMod, formatMod, customMod, grammarMod]) {
+      Object.assign(m, freshModule())
+      m.status = 'loading'
+    }
+  }
+
+  if (aiEnabled.value && hasAIConfig.value && aiConfig.value.providerId) {
+    const fp = appState.currentFile?.path
+    if (fp) {
+      const cached = getAICache(fp, text)
+      if (cached) {
+        distributeAIResults(cached)
+        for (const m of [typoMod, sensitiveMod, formatMod, customMod, grammarMod]) {
+          m.cached = true
+        }
+        return
+      }
+    }
+    resetAll()
+    const items = await aiProofread(text, aiConfig.value, ['typo', 'grammar', 'format', 'sensitive'], appState.sensitiveWords)
+    if (fp) setAICache(fp, text, items)
+    distributeAIResults(items)
+  } else {
+    resetAll()
+    const r = proofreadText(text, appState.sensitiveWords, appState.customRuleGroups, {
+      typo: true, sensitive: true, format: true, grammar: true, custom: true,
+    })
+    applyLocalResults(r.typos, typoMod)
+    applyLocalResults(r.grammar, grammarMod)
+    applyLocalResults(r.sensitive, sensitiveMod)
+    applyLocalResults(r.format, formatMod)
+    applyLocalResults(r.custom, customMod)
+  }
+}
+
+function distributeAIResults(items: AIProofreadResult[]) {
+  const groups: Record<string, AIProofreadResult[]> = { typo: [], grammar: [], format: [], sensitive: [] }
+  for (const item of items) {
+    if (groups[item.type]) groups[item.type].push(item)
+  }
+  const assign = (mod: ModuleState, typeItems: AIProofreadResult[]) => {
+    const mapped: ProofreadItem[] = typeItems.map(ai => ({
+      type: (typeItems[0]?.type || 'typo') as any,
+      message: ai.message, detail: ai.message,
+      line: 0, col: 0, lineNum: 0, colNum: 0,
+      wrong: ai.wrong, correct: ai.correct, fixed: ai.fixed,
+      confidence: 'medium' as const,
+    }))
+    const filtered = getCurrentFilePath() ? mapped.filter(item => !isIgnored(item)) : mapped
+    mod.items = filtered; mod.ignored = []; mod.status = filtered.length === 0 ? 'clean' : 'issues'
+  }
+  assign(typoMod, groups.typo)
+  assign(grammarMod, groups.grammar)
+  assign(sensitiveMod, groups.sensitive)
+  assign(formatMod, groups.format)
+  // customMod intentionally left empty (AI doesn't handle custom rules)
+  if (customMod.items.length === 0) customMod.status = 'idle'
+}
+
+function applyLocalResults(items: ProofreadItem[], mod: ModuleState) {
+  const filtered = getCurrentFilePath() ? items.filter(item => !isIgnored(item)) : items
+  mod.items = filtered; mod.ignored = []; mod.status = filtered.length === 0 ? 'clean' : 'issues'
 }
 
 /* ---- Sensitive word management ---- */
@@ -349,11 +558,27 @@ async function loadSensitiveConfig() {
 onMounted(async () => {
   pos.value.x = Math.max(0, window.innerWidth - 340 - 52)
   pos.value.y = 0
+  await loadAIConfig()
+  // Default AI detection to ON when a config is available
+  if (hasAIConfig.value) aiEnabled.value = true
   await loadSensitiveConfig()
   try {
     const { loadIgnored } = await import('../proofreadData')
     ignoredEntries.value = await loadIgnored()
   } catch { /* ignore */ }
+})
+
+// Re-check AI config when master switch changes
+watch(() => appState.aiMasterEnabled, () => {
+  if (!appState.aiMasterEnabled) aiEnabled.value = false
+  loadAIConfig()
+})
+
+// Reset module states when AI toggle changes — UI updates in real-time
+watch(aiEnabled, () => {
+  for (const m of [typoMod, sensitiveMod, formatMod, customMod, grammarMod]) {
+    Object.assign(m, freshModule())
+  }
 })
 
 /* Reposition on panel type change */
@@ -403,126 +628,246 @@ watch(() => appState.sidePanelMode, (mode) => {
 
           <!-- Proofread panel -->
           <template v-else-if="appState.activeSidePanel === 'proofread'">
-            <!-- ─── 错别字检测 ─── -->
-            <div class="module">
-              <div class="module-hd" @click="toggleCollapse('typo')">
-                <span class="collapse-arrow">{{ collapsed.has('typo') ? '▶' : '▼' }}</span>
-                <span class="mod-icon mod-typo">错</span>
-                <span class="mod-title">错别字检测</span>
-                <span class="mod-status" :class="typoMod.status">{{ statusText(typoMod) }}</span>
+            <div v-if="!hasContent" class="no-content-hint">
+              <p>请打开需要检测的内容</p>
+            </div>
+            <template v-else>
+              <!-- ─── AI toggle (novel projects: top; article: inside full-text module) ─── -->
+              <div v-if="!isArticleProject && appState.aiMasterEnabled && hasAIConfig" class="ai-toggle-bar">
+                <label class="ai-toggle-label">
+                  <input type="checkbox" v-model="aiEnabled" />
+                  <span>AI 智能检测</span>
+                </label>
+                <span v-if="aiEnabled" class="ai-warning warn-token">将消耗自身 Token 额度</span>
+                <span v-else class="ai-warning warn-local">检测结果可能有遗漏或不完善</span>
               </div>
+              <div v-if="!isArticleProject && appState.aiMasterEnabled && hasAIConfig" class="mod-spacer"></div>
 
-              <template v-if="!collapsed.has('typo')">
-              <div v-if="visibleTypos.length" class="err-list">
-                <div v-for="(item, idx) in visibleTypos" :key="idx" class="err-row" @click="jumpToItem(item)">
-                  <span class="err-text">
-                    <span class="err-src">{{ item.wrong }}</span>
-                    <span class="err-arrow">→</span>
-                    <span class="err-dst">{{ item.correct }}</span>
-                  </span>
-                  <span class="err-actions" @click.stop>
-                    <button class="act-btn" @click="ignorePermanently(typoMod, item)">忽略</button>
-                    <button class="act-btn act-primary" @click="applyFix(typoMod, item)">修改</button>
-                  </span>
+              <!-- ══════════════ NOVEL PROJECT: 4 modules ══════════════ -->
+              <template v-if="!isArticleProject">
+              <!-- ─── 错别字检测 ─── -->
+              <div class="module">
+                <div class="module-hd" @click="toggleCollapse('typo')">
+                  <span class="collapse-arrow">{{ collapsed.has('typo') ? '▶' : '▼' }}</span>
+                  <span class="mod-icon mod-typo">错</span>
+                  <span class="mod-title">错别字检测</span>
+                  <span class="mod-status" :class="typoMod.status">{{ statusText(typoMod) }}</span>
                 </div>
+                <template v-if="!collapsed.has('typo')">
+                <div v-if="visibleTypos.length" class="err-list">
+                  <div v-for="(item, idx) in visibleTypos" :key="idx" class="err-row" @click="jumpToItem(item)">
+                    <span class="err-text">
+                      <span class="err-src">{{ item.wrong }}</span>
+                      <span class="err-arrow">→</span>
+                      <span class="err-dst">{{ item.correct }}</span>
+                    </span>
+                    <span class="err-actions" @click.stop>
+                      <button class="act-btn" @click="ignorePermanently(typoMod, item)">忽略</button>
+                      <button v-if="item.fixed || item.correct" class="act-btn act-primary" @click="applyFix(typoMod, item)">修改</button>
+                    </span>
+                  </div>
+                </div>
+                <div class="mod-actions">
+                  <button class="btn-action" :disabled="!nonIgnoredTypos.length" @click="applyAllFixes">全部修改</button>
+                  <button
+                    class="btn-action btn-primary"
+                    :disabled="typoMod.status === 'loading'"
+                    @click="runModuleCheck(typoMod, 'typo')"
+                  >{{ typoMod.status === 'loading' ? '检测中…' : '检测' }}</button>
+                </div>
+                </template>
               </div>
+              <div class="mod-spacer"></div>
 
-              <div class="mod-actions">
-                <button class="btn-action" :disabled="!nonIgnoredTypos.length" @click="applyAllFixes">全部修改</button>
+              <!-- ─── 病句检测 ─── -->
+              <div class="module">
+                <div class="module-hd" @click="toggleCollapse('grammar')">
+                  <span class="collapse-arrow">{{ collapsed.has('grammar') ? '▶' : '▼' }}</span>
+                  <span class="mod-icon mod-gram">句</span>
+                  <span class="mod-title">病句检测</span>
+                  <span v-if="!aiEnabled || !hasAIConfig" class="mod-status ai-needed">需接入AI</span>
+                  <span v-else class="mod-status" :class="grammarMod.status">{{ statusText(grammarMod) }}</span>
+                </div>
+                <template v-if="!collapsed.has('grammar')">
+                  <template v-if="aiEnabled && hasAIConfig">
+                    <div v-if="visibleGrammar.length" class="err-list">
+                      <div v-for="(item, idx) in visibleGrammar" :key="idx" class="err-row" @click="jumpToItem(item)">
+                        <span class="err-text">
+                          <span class="err-src">{{ item.wrong }}</span>
+                          <span class="err-arrow">→</span>
+                          <span class="err-dst">{{ item.correct }}</span>
+                        </span>
+                        <span class="err-actions" @click.stop>
+                          <button class="act-btn" @click="ignorePermanently(grammarMod, item)">忽略</button>
+                          <button v-if="item.fixed || item.correct" class="act-btn act-primary" @click="applyFix(grammarMod, item)">修改</button>
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      class="btn-full"
+                      :disabled="grammarMod.status === 'loading'"
+                      @click="runModuleCheck(grammarMod, 'grammar')"
+                    >{{ grammarMod.status === 'loading' ? '检测中…' : '检测病句' }}</button>
+                  </template>
+                  <template v-else>
+                    <button class="btn-full disabled" disabled>需接入AI模型后可用</button>
+                  </template>
+                </template>
+              </div>
+              <div class="mod-spacer"></div>
+
+              <!-- ─── 风险检测 ─── -->
+              <div class="module">
+                <div class="module-hd" @click="toggleCollapse('risk')">
+                  <span class="collapse-arrow">{{ collapsed.has('risk') ? '▶' : '▼' }}</span>
+                  <span class="mod-icon mod-risk">险</span>
+                  <span class="mod-title">风险检测</span>
+                  <span class="mod-status" :class="sensitiveMod.status">{{ statusText(sensitiveMod) }}</span>
+                  <button class="hd-btn" @click.stop="view='sensitive-mgmt'">设置词库</button>
+                </div>
+                <template v-if="!collapsed.has('risk')">
+                <div v-if="visibleSensitive.length" class="res-cpt">
+                  <div v-for="(item, idx) in visibleSensitive" :key="idx" class="res-crow" @click="jumpToItem(item)">
+                    <span class="res-cword">{{ item.message }}</span>
+                    <span class="res-cactions" @click.stop>
+                      <button class="act-btn" @click="ignorePermanently(sensitiveMod, item)">忽略</button>
+                    </span>
+                  </div>
+                </div>
                 <button
-                  class="btn-action btn-primary"
-                  :disabled="typoMod.status === 'loading'"
-                  @click="runModuleCheck(typoMod, 'typo')"
-                >{{ typoMod.status === 'loading' ? '检测中…' : '检测' }}</button>
+                  class="btn-full"
+                  :disabled="sensitiveMod.status === 'loading'"
+                  @click="runModuleCheck(sensitiveMod, 'sensitive')"
+                >{{ sensitiveMod.status === 'loading' ? '检测中…' : '检测风险内容' }}</button>
+                </template>
               </div>
-              </template>
-            </div>
+              <div class="mod-spacer"></div>
 
-            <div class="mod-spacer"></div>
-
-            <!-- ─── 病句检测 ─── -->
-            <div class="module">
-              <div class="module-hd" @click="toggleCollapse('grammar')">
-                <span class="collapse-arrow">{{ collapsed.has('grammar') ? '▶' : '▼' }}</span>
-                <span class="mod-icon mod-gram">句</span>
-                <span class="mod-title">病句检测</span>
-                <span class="mod-status ai-needed">需接入AI</span>
-              </div>
-              <template v-if="!collapsed.has('grammar')">
-              <button class="btn-full disabled" disabled>需接入AI模型后可用</button>
-              </template>
-            </div>
-
-            <div class="mod-spacer"></div>
-
-            <!-- ─── 风险检测 ─── -->
-            <div class="module">
-              <div class="module-hd" @click="toggleCollapse('risk')">
-                <span class="collapse-arrow">{{ collapsed.has('risk') ? '▶' : '▼' }}</span>
-                <span class="mod-icon mod-risk">险</span>
-                <span class="mod-title">风险检测</span>
-                <span class="mod-status" :class="sensitiveMod.status">{{ statusText(sensitiveMod) }}</span>
-                <button class="hd-btn" @click.stop="view='sensitive-mgmt'">设置词库</button>
-              </div>
-
-              <template v-if="!collapsed.has('risk')">
-              <div v-if="visibleSensitive.length" class="res-cpt">
-                <div v-for="(item, idx) in visibleSensitive" :key="idx" class="res-crow" @click="jumpToItem(item)">
-                  <span class="res-cword">{{ item.message }}</span>
-                  <span class="res-cactions" @click.stop>
-                    <button class="act-btn" @click="ignorePermanently(sensitiveMod, item)">忽略</button>
-                  </span>
+              <!-- ─── 自定义纠错 ─── -->
+              <div class="module">
+                <div class="module-hd" @click="toggleCollapse('custom')">
+                  <span class="collapse-arrow">{{ collapsed.has('custom') ? '▶' : '▼' }}</span>
+                  <span class="mod-icon mod-custom">纠</span>
+                  <span class="mod-title">自定义纠错</span>
+                  <span class="mod-status" :class="customMod.status">{{ statusText(customMod) }}</span>
+                  <button class="hd-btn" @click.stop="showCustomRuleDialog = true">设置词库</button>
                 </div>
-              </div>
-
-              <button
-                class="btn-full"
-                :disabled="sensitiveMod.status === 'loading'"
-                @click="runModuleCheck(sensitiveMod, 'sensitive')"
-              >{{ sensitiveMod.status === 'loading' ? '检测中…' : '检测风险内容' }}</button>
-              </template>
-            </div>
-
-            <div class="mod-spacer"></div>
-
-            <!-- ─── 自定义纠错 ─── -->
-            <div class="module">
-              <div class="module-hd" @click="toggleCollapse('custom')">
-                <span class="collapse-arrow">{{ collapsed.has('custom') ? '▶' : '▼' }}</span>
-                <span class="mod-icon mod-custom">纠</span>
-                <span class="mod-title">自定义纠错</span>
-                <span class="mod-status" :class="customMod.status">{{ statusText(customMod) }}</span>
-                <button class="hd-btn" @click.stop="showCustomRuleDialog = true">设置词库</button>
-              </div>
-
-              <template v-if="!collapsed.has('custom')">
-              <div v-if="visibleCustom.length" class="err-list">
-                <div v-for="(item, idx) in visibleCustom" :key="idx" class="err-row" @click="jumpToItem(item)">
-                  <span class="err-text">
-                    <span class="err-src">{{ item.wrong }}</span>
-                    <span class="err-arrow">→</span>
-                    <span class="err-dst">{{ item.correct || '(删除)' }}</span>
-                  </span>
-                  <span class="err-actions" @click.stop>
-                    <button class="act-btn" @click="ignorePermanently(customMod, item)">忽略</button>
-                    <button v-if="item.correct" class="act-btn act-primary" @click="applyFix(customMod, item)">修改</button>
-                  </span>
+                <template v-if="!collapsed.has('custom')">
+                <div v-if="visibleCustom.length" class="err-list">
+                  <div v-for="(item, idx) in visibleCustom" :key="idx" class="err-row" @click="jumpToItem(item)">
+                    <span class="err-text">
+                      <span class="err-src">{{ item.wrong }}</span>
+                      <span class="err-arrow">→</span>
+                      <span class="err-dst">{{ item.correct || '(删除)' }}</span>
+                    </span>
+                    <span class="err-actions" @click.stop>
+                      <button class="act-btn" @click="ignorePermanently(customMod, item)">忽略</button>
+                      <button v-if="item.correct" class="act-btn act-primary" @click="applyFix(customMod, item)">修改</button>
+                    </span>
+                  </div>
                 </div>
+                <button
+                  class="btn-full"
+                  :disabled="customMod.status === 'loading'"
+                  @click="runModuleCheck(customMod, 'custom')"
+                >{{ customMod.status === 'loading' ? '检测中…' : '检测自定义规则' }}</button>
+                </template>
               </div>
 
-              <button
-                class="btn-full"
-                :disabled="customMod.status === 'loading'"
-                @click="runModuleCheck(customMod, 'custom')"
-              >{{ customMod.status === 'loading' ? '检测中…' : '检测自定义规则' }}</button>
+              <!-- ─── Novel: Full-text detection ─── -->
+              <div class="bottom-area">
+                <p v-if="aiEnabled" class="disclaimer warn-token">将消耗自身 Token 额度</p>
+                <p v-else class="disclaimer">智能识别，可能出现误差，仅供参考</p>
+                <button
+                  class="btn-primary-full"
+                  @click="runFullTextCheck"
+                  :disabled="!appState.aiMasterEnabled || !aiEnabled || typoMod.status === 'loading'"
+                >{{ typoMod.status === 'loading' ? '检测中…' : 'AI 全文检测' }}</button>
+              </div>
               </template>
-            </div>
 
-            <!-- ─── Bottom ─── -->
-            <div class="bottom-area">
-              <p class="disclaimer">智能识别，可能出现误差，仅供参考</p>
-              <button class="btn-primary-full" disabled>全文检测</button>
-            </div>
+              <!-- ══════════════ ARTICLE PROJECT: full-text only ══════════════ -->
+              <template v-if="isArticleProject">
+              <div class="module">
+                <div class="module-hd">
+                  <span class="mod-icon mod-fulltext">全</span>
+                  <span class="mod-title">全文检测</span>
+                </div>
+
+                <!-- AI toggle inside full-text module -->
+                <div v-if="appState.aiMasterEnabled && hasAIConfig" class="ai-toggle-row">
+                  <label class="ai-toggle-label">
+                    <input type="checkbox" v-model="aiEnabled" />
+                    <span>使用 AI 检测</span>
+                  </label>
+                  <span v-if="aiEnabled" class="ai-warning warn-token">将消耗自身 Token 额度</span>
+                  <span v-else class="ai-warning warn-local">检测结果可能有遗漏或不完善</span>
+                </div>
+                <div v-else-if="!appState.aiMasterEnabled" class="ai-toggle-row ai-hint">
+                  <span class="ai-warning warn-local">AI 功能已关闭，当前使用本地检测</span>
+                </div>
+                <div v-else-if="!hasAIConfig" class="ai-toggle-row ai-hint">
+                  <span class="ai-warning warn-local">未配置 AI 模型，当前使用本地检测</span>
+                </div>
+
+                <!-- Grouped results -->
+                <div v-if="typoMod.items.length && !typoMod.cached" class="full-results">
+                  <div v-if="visibleTypos.length" class="res-group">
+                    <div class="res-group-title">错别字</div>
+                    <div v-for="(item, idx) in visibleTypos" :key="'t'+idx" class="err-row" @click="jumpToItem(item)">
+                      <span class="err-text">
+                        <span class="err-src">{{ item.wrong }}</span>
+                        <span class="err-arrow">→</span>
+                        <span class="err-dst">{{ item.correct }}</span>
+                      </span>
+                      <span class="err-actions" @click.stop>
+                        <button class="act-btn" @click="ignorePermanently(typoMod, item)">忽略</button>
+                        <button v-if="item.fixed || item.correct" class="act-btn act-primary" @click="applyFix(typoMod, item)">修改</button>
+                      </span>
+                    </div>
+                  </div>
+                  <div v-if="visibleGrammar.length" class="res-group">
+                    <div class="res-group-title">病句</div>
+                    <div v-for="(item, idx) in visibleGrammar" :key="'g'+idx" class="err-row" @click="jumpToItem(item)">
+                      <span class="err-text">
+                        <span class="err-src">{{ item.wrong }}</span>
+                        <span class="err-arrow">→</span>
+                        <span class="err-dst">{{ item.correct }}</span>
+                      </span>
+                      <span class="err-actions" @click.stop>
+                        <button class="act-btn" @click="ignorePermanently(grammarMod, item)">忽略</button>
+                        <button v-if="item.fixed || item.correct" class="act-btn act-primary" @click="applyFix(grammarMod, item)">修改</button>
+                      </span>
+                    </div>
+                  </div>
+                  <div v-if="visibleSensitive.length" class="res-group">
+                    <div class="res-group-title">风险内容</div>
+                    <div v-for="(item, idx) in visibleSensitive" :key="'s'+idx" class="err-row" @click="jumpToItem(item)">
+                      <span class="err-text">{{ item.message }}</span>
+                      <span class="err-actions" @click.stop>
+                        <button class="act-btn" @click="ignorePermanently(sensitiveMod, item)">忽略</button>
+                      </span>
+                    </div>
+                  </div>
+                  <div v-if="formatMod.items.length - formatMod.ignored.length > 0" class="res-group">
+                    <div class="res-group-title">格式标点</div>
+                    <div v-for="(item, idx) in formatMod.items.filter((_,i) => !formatMod.ignored.includes(i))" :key="'f'+idx" class="err-row" @click="jumpToItem(item)">
+                      <span class="err-text">{{ item.message }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Cache note -->
+                <div v-if="typoMod.cached" class="cache-note">上次检测结果（缓存）</div>
+
+                <button
+                  class="btn-full"
+                  :disabled="!appState.aiMasterEnabled || !aiEnabled || typoMod.status === 'loading'"
+                  @click="runFullTextCheck"
+                >{{ typoMod.status === 'loading' ? '检测中…' : (typoMod.cached ? '重新检测' : '全文检测') }}</button>
+              </div>
+              </template>
+            </template>
           </template>
 
           <template v-else>
@@ -689,6 +1034,7 @@ watch(() => appState.sidePanelMode, (mode) => {
 .mod-gram { background: #95a5a6; }
 .mod-risk { background: #f39c12; }
 .mod-custom { background: #3498db; }
+.mod-fulltext { background: #9b59b6; }
 
 .mod-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .mod-status { font-size: 11px; color: var(--text-muted); margin-left: auto; }
@@ -788,8 +1134,12 @@ watch(() => appState.sidePanelMode, (mode) => {
 .btn-primary-full {
   width: 100%; height: 38px;
   border: none; border-radius: 8px;
-  background: var(--bg-surface);
-  color: var(--text-muted); font-size: 13px; font-weight: 600;
+  background: var(--accent-color); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: opacity 0.15s;
+}
+.btn-primary-full:hover { opacity: 0.85; }
+.btn-primary-full:disabled {
+  background: var(--bg-surface); color: var(--text-muted);
   cursor: not-allowed; opacity: 0.55;
 }
 
@@ -868,6 +1218,81 @@ watch(() => appState.sidePanelMode, (mode) => {
 .chip-hint:hover { color: var(--accent-color); }
 .empty-state { text-align: center; color: var(--text-muted); font-size: 13px; padding: 24px 0; }
 .empty-state.small { padding: 12px 0; }
+
+/* ============ AI Toggle ============ */
+.ai-toggle-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.ai-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+.ai-toggle-label input[type="checkbox"] {
+  width: 14px; height: 14px;
+  cursor: pointer;
+}
+
+.ai-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ai-hint { justify-content: center; }
+.ai-hint .ai-warning { font-size: 12px; }
+.ai-warning { font-size: 11px; }
+.warn-token { color: #e67e22; }
+.warn-local { color: var(--text-muted); opacity: 0.7; }
+
+/* ============ No Content Hint ============ */
+.no-content-hint {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 40px 20px;
+}
+.no-content-hint p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* ============ Full-text Results (article grouped) ============ */
+.full-results {
+  border-bottom: 1px solid var(--border-color);
+}
+.res-group {
+  border-bottom: 1px solid var(--border-color);
+}
+.res-group:last-child { border-bottom: none; }
+.res-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 12px;
+  background: var(--bg-surface);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ============ Cache Note ============ */
+.cache-note {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
 
 /* ─── Transition ─── */
 .overlay-panel-enter-active { transition: opacity 0.2s ease, transform 0.2s ease; }

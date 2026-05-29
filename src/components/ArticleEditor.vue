@@ -15,6 +15,7 @@ import {
   type TemplateItem,
 } from '../article-templates'
 import { getAllTools } from '../quick-tools'
+import { registerShortcut, unregisterShortcut } from '../useKeyboardShortcuts'
 import RichTextEditor from './RichTextEditor.vue'
 import CustomTemplateDialog from './CustomTemplateDialog.vue'
 import ImageUploadPanel from './ImageUploadPanel.vue'
@@ -90,44 +91,20 @@ let _carouselEl: Element | null = null
 let _onCarouselClick: ((e: Event) => void) | null = null
 let _galleryCleanup: (() => void) | null = null
 
-// Listen for clicks on carousel images inside the editor
+// Listen for carousel-click custom event from RichTextEditor
+function onCarouselClick(e: Event) {
+  const detail = (e as CustomEvent).detail as string[]
+  if (!detail || !Array.isArray(detail)) return
+  carouselImages.value = detail
+  showCarouselPanel.value = true
+}
+
 onMounted(() => {
   const el = document.querySelector('.editor-area-right')
   if (el) {
     _carouselEl = el
-    _onCarouselClick = (e: Event) => {
-      const target = e.target as HTMLElement
-      const img = target.closest<HTMLImageElement>('img')
-      if (!img) return
-      const src = img.getAttribute('src') || ''
-
-      // Detect carousel images: placeholder src or inside a carousel container
-      const isPlaceholder = src.includes('/images/carousel-') && src.endsWith('.svg')
-      const isInCarousel = !isPlaceholder && !!img.closest('[style*="carouselAnim"], [style*="min-width:33.333%"]')
-
-      if (isPlaceholder || isInCarousel) {
-        // Collect all 3 carousel images from the DOM
-        const editorArea = document.querySelector('.editor-area-right')
-        if (editorArea) {
-          const allImgs = editorArea.querySelectorAll<HTMLImageElement>('img')
-          const carouselSrcs: string[] = []
-          for (const imgEl of allImgs) {
-            const s = imgEl.getAttribute('src') || ''
-            if (s.includes('/images/carousel-') || imgEl.closest('[style*="carouselAnim"], [style*="min-width:33.333%"]')) {
-              if (!carouselSrcs.includes(s)) {
-                carouselSrcs.push(s)
-              }
-            }
-          }
-          // Fill up to 3 slots with found images or defaults
-          const defaults = ['/images/carousel-1.svg', '/images/carousel-2.svg', '/images/carousel-3.svg']
-          while (carouselSrcs.length < 3) carouselSrcs.push(defaults[carouselSrcs.length])
-          carouselImages.value = carouselSrcs.slice(0, 3)
-        }
-        showCarouselPanel.value = true
-      }
-    }
-    el.addEventListener('click', _onCarouselClick)
+    _onCarouselClick = onCarouselClick
+    el.addEventListener('carousel-click', _onCarouselClick)
   }
 })
 
@@ -250,8 +227,10 @@ onMounted(() => {
 onUnmounted(() => {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
   if (metaSavedTimer) { clearTimeout(metaSavedTimer); metaSavedTimer = null }
-  if (_onCarouselClick && _carouselEl) { _carouselEl.removeEventListener('click', _onCarouselClick); _carouselEl = null; _onCarouselClick = null }
+  if (_onCarouselClick && _carouselEl) { _carouselEl.removeEventListener('carousel-click', _onCarouselClick); _carouselEl = null; _onCarouselClick = null }
   _galleryCleanup?.(); _galleryCleanup = null
+  unregisterShortcut('articleCopy')
+  unregisterShortcut('articleCut')
 })
 
 async function handleCustomSave(name: string, html: string) {
@@ -295,6 +274,7 @@ watch(activeCategory, () => {
 
 function onWordCount(count: WordCount) {
   articleWordCount.value = count
+  appState.wordCount = count
 }
 
 // ===== Mobile Preview (controlled via appState for RightPanel integration)
@@ -364,9 +344,6 @@ async function clearContent() {
   editorRef.value?.clearContent()
 }
 
-const charCountStr = computed(() =>
-  `字数 ${(articleWordCount.totalChars || 0).toLocaleString()} | 汉字 ${(articleWordCount.chineseChars || 0).toLocaleString()} | 段落 ${articleWordCount.lines || 0}`
-)
 
 const articleTitle = computed(() => {
   if (!appState.currentFile) return '未选择文章'
@@ -375,6 +352,12 @@ const articleTitle = computed(() => {
 
 onMounted(() => {
   loadMeta()
+  registerShortcut('articleCopy', () => {
+    copyContent()
+  })
+  registerShortcut('articleCut', () => {
+    ;(editorRef.value as any)?.cutSelection()
+  })
 })
 
 // Watch for project change
@@ -420,12 +403,7 @@ watch(() => appState.currentFile, (file) => {
           <span class="cat-name" v-show="!catNavCollapsed">{{ cat.name }}</span>
         </div>
       </div>
-      <div class="cat-nav-footer" v-show="!catNavCollapsed">
-        <span class="cat-nav-footer-icon" title="样式兼容提示">⚠</span>
-        <span class="cat-nav-footer-text">模板样式在粘贴到公众号/头条等平台时可能有差异，发布前请先粘贴测试。</span>
-      </div>
     </div>
-
     <!-- ===== MIDDLE: Template Gallery ===== -->
     <div class="template-gallery">
       <div class="gallery-header">
@@ -601,12 +579,6 @@ watch(() => appState.currentFile, (file) => {
         />
       </div>
 
-      <!-- Bottom action bar -->
-      <div class="editor-bottom-bar">
-        <div class="ebb-left">
-          <span class="wc-info">{{ charCountStr }}</span>
-        </div>
-      </div>
     </div>
 
     <!-- ===== Quick Tools Sidebar ===== -->
@@ -1186,23 +1158,6 @@ watch(() => appState.currentFile, (file) => {
 .empty-hint {
   font-size: 12px;
   color: var(--text-muted);
-}
-
-/* Bottom bar */
-.editor-bottom-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  background: var(--bg-secondary);
-  border-top: 1px solid var(--border-color);
-  flex-shrink: 0;
-}
-
-.wc-info {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-weight: 500;
 }
 
 /* ===== Quick Tools Sidebar ===== */

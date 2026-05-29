@@ -136,7 +136,16 @@ export const appState = reactive({
   articleShowQuickTools: false,
   articleActionStamp: 0,
   articlePendingAction: '',
+  // AI master switch (persisted, gates all AI features)
+  aiMasterEnabled: true,
 })
+
+/** Project types that use the article (TipTap) editor, hide individual proofread modules */
+export const articleProjectTypes = ['wechat_article', 'toutiao_article'] as const
+
+export function isArticleProject(pt: string): boolean {
+  return (articleProjectTypes as readonly string[]).includes(pt)
+}
 
 // Skin palette data
 export interface SkinInfo {

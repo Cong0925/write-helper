@@ -126,6 +126,7 @@ async function handleNewArticle() {
 // Inline rename
 const editingPath = ref('')
 const renameInput = ref('')
+let renaming = false
 
 function startRename(entry: FileEntry) {
   editingPath.value = entry.path
@@ -133,17 +134,20 @@ function startRename(entry: FileEntry) {
 }
 
 async function confirmRename(entry: FileEntry) {
+  if (renaming) return
   if (!renameInput.value.trim()) { editingPath.value = ''; return }
   const origExt = entry.name.endsWith('.html') ? '.html' : '.md'
   const newName = renameInput.value.trim() + origExt
   if (newName === entry.name) { editingPath.value = ''; return }
   const dir = entry.path.substring(0, entry.path.lastIndexOf('/'))
   const newPath = dir + '/' + newName
+  renaming = true
   try {
     await renameFile(entry.path, newPath)
   } catch (e) {
     await dialog.alert('重命名失败: ' + e)
     editingPath.value = ''
+    renaming = false
     return
   }
   if (appState.currentFile?.path === entry.path) {
@@ -151,6 +155,7 @@ async function confirmRename(entry: FileEntry) {
   }
   await loadArticles()
   editingPath.value = ''
+  renaming = false
 }
 
 function handleRenameKeydown(e: KeyboardEvent, entry: FileEntry) {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, watch, onMounted } from 'vue'
-import { appState, getSkinCssVars } from './store'
+import { appState, getSkinCssVars, articleProjectTypes } from './store'
 import { initKeyboardShortcuts } from './useKeyboardShortcuts'
 import { initCustomTemplates } from './article-templates'
 import Welcome from './components/Welcome.vue'
@@ -19,8 +19,8 @@ import BgSettingsPanel from './components/BgSettingsPanel.vue'
 import GlobalDialog from './components/GlobalDialog.vue'
 
 const isArticleProject = computed(() => {
-  const pt = appState.project?.projectType || 'novel'
-  return pt === 'wechat_article' || pt === 'toutiao_article'
+  const pt = appState.project?.projectType || ''
+  return (articleProjectTypes as readonly string[]).includes(pt)
 })
 
 const themeClass = computed(() => appState.theme === 'dark' ? 'theme-dark' : 'theme-light')
@@ -170,6 +170,7 @@ html, body, #app {
   flex: 1;
   overflow: hidden;
 }
+
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

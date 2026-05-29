@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, computed } from 'vue'
-import { appState } from '../store'
+import { appState, articleProjectTypes } from '../store'
 import { getEditorView } from '../editorHelper'
 import { undo as cmUndo, redo as cmRedo } from '@codemirror/commands'
 import { registerShortcut, unregisterShortcut } from '../useKeyboardShortcuts'
@@ -20,8 +20,8 @@ const typeLabels: Record<string, string> = {
 }
 
 const isArticleProject = computed(() => {
-  const pt = appState.project?.projectType || 'novel'
-  return pt === 'wechat_article' || pt === 'toutiao_article'
+  const pt = appState.project?.projectType || ''
+  return (articleProjectTypes as readonly string[]).includes(pt)
 })
 
 function toggleFullscreen() {

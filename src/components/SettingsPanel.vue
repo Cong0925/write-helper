@@ -72,6 +72,10 @@ onMounted(async () => {
     const val = await getConfig('autoSave')
     if (val === 'false') appState.autoSave = false
   } catch { /* ignore */ }
+  try {
+    const val = await getConfig('aiMasterEnabled')
+    if (val === 'false') appState.aiMasterEnabled = false
+  } catch { /* ignore */ }
   loadAIProviders()
   await nextTick()
   setupObserver()
@@ -316,6 +320,12 @@ async function toggleAutoSave() {
     await setConfig('autoSave', appState.autoSave ? 'true' : 'false')
   } catch { /* ignore */ }
 }
+
+async function toggleAiMaster() {
+  try {
+    await setConfig('aiMasterEnabled', appState.aiMasterEnabled ? 'true' : 'false')
+  } catch { /* ignore */ }
+}
 </script>
 
 <template>
@@ -412,17 +422,11 @@ async function toggleAutoSave() {
                       <span class="sc-func">定位章尾 <span v-if="shortcutDone['chapter-end']" class="sc-done">✓</span></span>
                       <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>↓</kbd></span>
                     </div>
-                    <div class="shortcut-row" v-if="isNovel">
+                    <div class="shortcut-row">
                       <span class="sc-func">老板键 <span v-if="shortcutDone['boss-key']" class="sc-done">✓</span></span>
                       <span class="sc-key"><kbd>Alt</kbd> + <kbd>`</kbd></span>
                       <span class="sc-func">查看快捷键 <span v-if="shortcutDone['view-shortcuts']" class="sc-done">✓</span></span>
                       <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>0</kbd></span>
-                    </div>
-                    <div class="shortcut-row" v-else>
-                      <span class="sc-func">查看快捷键 <span v-if="shortcutDone['view-shortcuts']" class="sc-done">✓</span></span>
-                      <span class="sc-key"><kbd>Ctrl</kbd> + <kbd>0</kbd></span>
-                      <span class="sc-func"></span>
-                      <span class="sc-key"></span>
                     </div>
                     <div class="shortcut-row" v-if="isNovel">
                       <span class="sc-func">大纲 <span v-if="shortcutDone['outline']" class="sc-done">✓</span></span>
@@ -444,10 +448,25 @@ async function toggleAutoSave() {
               <section class="setting-section" data-section="ai-models">
                 <h3 class="section-title">AI 模型配置</h3>
 
+                <!-- AI 主开关 → 放在模型配置之前 -->
+                <div class="form-group" style="margin-bottom:16px;">
+                  <div class="toggle-row">
+                    <div class="toggle-info">
+                      <label class="form-label">AI 功能主开关</label>
+                      <p class="form-hint">关闭后全局禁用所有 AI 相关功能（AI 助手、AI 校对等）</p>
+                    </div>
+                    <label class="toggle-switch">
+                      <input type="checkbox" v-model="appState.aiMasterEnabled" @change="toggleAiMaster" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+                </div>
+
                 <div v-if="allProviders.length === 0" class="empty-providers">加载中...</div>
 
                 <template v-else>
-                  <div v-for="slot in slots" :key="slot.id" class="model-slot">
+                  <template v-if="appState.aiMasterEnabled">
+                    <div v-for="slot in slots" :key="slot.id" class="model-slot">
                     <div class="form-group">
                       <label class="form-label">服务商</label>
                       <select v-model="slot.providerId" class="form-input" @change="onSlotProviderChange(slot)">
@@ -495,8 +514,13 @@ async function toggleAutoSave() {
                       {{ slot.testResult.msg }}
                     </div>
                   </div>
-
                   <button class="btn-add-slot" @click="addSlot">+ 添加更多模型服务</button>
+                  </template>
+                  <template v-else>
+                    <div class="form-group" style="padding:20px 0;text-align:center;color:var(--text-muted);font-size:13px;">
+                      已关闭，开启后可配置 AI 模型
+                    </div>
+                  </template>
                 </template>
               </section>
 

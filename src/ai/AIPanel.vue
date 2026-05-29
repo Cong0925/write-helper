@@ -223,7 +223,18 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="ai-panel">
+  <div v-if="!appState.aiMasterEnabled" class="ai-panel">
+    <div class="ai-header">
+      <span class="ai-header-icon">🤖</span>
+      <span class="ai-title">AI 写作助手</span>
+      <button class="ai-close-btn" @click="$emit('close')" title="关闭">✕</button>
+    </div>
+    <div class="ai-disabled">
+      <p>AI 功能已禁用</p>
+      <p class="ai-disabled-hint">请在「设置 → AI 模型」中开启 AI 主开关</p>
+    </div>
+  </div>
+  <div v-else class="ai-panel">
     <!-- Header -->
     <div class="ai-header">
       <span class="ai-header-icon">🤖</span>
@@ -529,4 +540,22 @@ onUnmounted(() => {
   color: #fff;
 }
 .btn-cancel:hover { opacity: 0.85; }
+
+/* Disabled state */
+.ai-disabled {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.ai-disabled-hint {
+  font-size: 12px;
+  opacity: 0.6;
+}
 </style>

@@ -1,10 +1,10 @@
 import { getEditorView } from './editorHelper'
-import { appState } from './store'
+import { appState, articleProjectTypes } from './store'
 import { getTiptapEditor } from './tiptapHelper'
 
 function isArticleProject(): boolean {
-  const pt = appState.project?.projectType || 'novel'
-  return pt === 'wechat_article' || pt === 'toutiao_article'
+  const pt = appState.project?.projectType || ''
+  return (articleProjectTypes as readonly string[]).includes(pt)
 }
 
 type ShortcutFn = () => void
@@ -110,6 +110,24 @@ export function initKeyboardShortcuts() {
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 's') {
       e.preventDefault()
       actions['saveFile']?.()
+      return
+    }
+
+    // Ctrl+C — article project copy via custom pipeline
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'c') {
+      if (isArticleProject()) {
+        e.preventDefault()
+        actions['articleCopy']?.()
+      }
+      return
+    }
+
+    // Ctrl+X — article project cut (custom copy then delete selection)
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'x') {
+      if (isArticleProject()) {
+        e.preventDefault()
+        actions['articleCut']?.()
+      }
       return
     }
   })

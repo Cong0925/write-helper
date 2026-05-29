@@ -1,5 +1,11 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { appState } from '../store'
+
+const isArticleProject = computed(() => {
+  const pt = appState.project?.projectType || 'novel'
+  return pt === 'wechat_article' || pt === 'toutiao_article'
+})
 </script>
 
 <template>
@@ -8,6 +14,9 @@ import { appState } from '../store'
       <span v-if="appState.currentFile" class="bar-item">
         {{ appState.currentFile.name.replace(/\.md$/, '') }}
       </span>
+    </div>
+    <div class="bar-center">
+      <span v-if="isArticleProject" class="bar-item hint-text">⚠ 模板样式在粘贴到公众号/头条等平台时可能有差异，发布前请先粘贴测试。</span>
     </div>
     <div class="bar-right">
       <span class="bar-item" v-if="appState.wordCount.totalChars > 0">
@@ -37,10 +46,15 @@ import { appState } from '../store'
   flex-shrink: 0;
 }
 
-.bar-left, .bar-right {
+.bar-left, .bar-center, .bar-right {
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.bar-center {
+  flex: 1;
+  justify-content: center;
 }
 
 .bar-item {
