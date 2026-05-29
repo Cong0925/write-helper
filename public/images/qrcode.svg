@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <rect width="120" height="120" fill="#f0f0f0" rx="4"/>
+  <rect x="10" y="10" width="40" height="40" rx="3" fill="#333"/>
+  <rect x="15" y="15" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="30" y="15" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="15" y="30" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="30" y="30" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="70" y="10" width="40" height="40" rx="3" fill="#333"/>
+  <rect x="75" y="15" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="90" y="15" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="75" y="30" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="90" y="30" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="10" y="70" width="40" height="40" rx="3" fill="#333"/>
+  <rect x="15" y="75" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="30" y="75" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="15" y="90" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="30" y="90" width="8" height="8" fill="#f0f0f0"/>
+  <rect x="55" y="55" width="10" height="10" fill="#333"/>
+  <circle cx="60" cy="60" r="40" fill="none" stroke="#999" stroke-width="0.5" stroke-dasharray="4,3"/>
+  <text x="60" y="108" text-anchor="middle" fill="#999" font-size="8" font-family="sans-serif">二维码</text>
+</svg>

@@ -1,0 +1,303 @@
+import type { TemplateItem } from '../types'
+
+export const id = 'title'
+export const name = '标题'
+export const icon = '🔤'
+
+export const templates: TemplateItem[] = [
+  // ========== 标题样式 1-50 全新全套 ==========
+  {
+    id: 'title-1',
+    name: '左右双线条对称标题',
+    category: 'title',
+    html: '<div style="display:flex; align-items:center; gap:12px; margin:22px 0;"><span style="flex:1; height:1px; background:#ddd;"></span><span style="font-size:18px; font-weight:bold; color:#333;">标题内容</span><span style="flex:1; height:1px; background:#ddd;"></span></div>',
+  },
+  {
+    id: 'title-2',
+    name: '蓝色实线边框圆角标题',
+    category: 'title',
+    html: '<div style="padding:10px 16px; border:2px solid #4a7dd4; border-radius:8px; text-align:center; font-size:17px; font-weight:bold; color:#4a7dd4; margin:20px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-3',
+    name: '粉色渐变柔色标题',
+    category: 'title',
+    html: '<div style="padding:10px; text-align:center; font-size:18px; font-weight:bold; background:linear-gradient(90deg,#f6cedc,#f8b3c4); color:#fff; border-radius:30px; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-4',
+    name: '星星图标+分割线标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:18px; font-weight:bold; color:#333;">⭐ 标题内容 ⭐</div>',
+  },
+  {
+    id: 'title-5',
+    name: '灰色虚线边框标题',
+    category: 'title',
+    html: '<div style="padding:12px; border:1px dashed #999; border-radius:10px; text-align:center; font-size:17px; color:#555; margin:20px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-6',
+    name: '左侧粗竖线商务标题',
+    category: 'title',
+    html: '<div style="padding:8px 0 8px 16px; border-left:5px solid #333; font-size:18px; font-weight:bold; color:#333; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-7',
+    name: '颜文字萌系标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:17px; color:#666;">(≧∇≦)ﾉ 标题内容</div>',
+  },
+  {
+    id: 'title-8',
+    name: '立体阴影卡片标题',
+    category: 'title',
+    html: '<div style="padding:14px; background:#fff; border-radius:10px; box-shadow:0 3px 10px rgba(0,0,0,0.1); font-size:17px; font-weight:bold; text-align:center; margin:24px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-9',
+    name: '绿色清新点状边框标题',
+    category: 'title',
+    html: '<div style="padding:10px; border:2px dotted #52c41a; border-radius:12px; text-align:center; font-size:17px; color:#52c41a; margin:20px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-10',
+    name: '上下波浪线文艺标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:26px 0;"><p style="margin:0; font-size:16px; color:#4a7dd4;">﹏﹏﹏﹏</p><p style="margin:8px 0; font-size:18px; font-weight:bold; color:#333;">标题内容</p><p style="margin:0; font-size:16px; color:#4a7dd4;">﹏﹏﹏﹏</p></div>',
+  },
+  {
+    id: 'title-11',
+    name: '科技风蓝黑渐变标题',
+    category: 'title',
+    html: '<div style="padding:12px; text-align:center; font-size:17px; font-weight:bold; color:#fff; background:linear-gradient(90deg,#1a2980,#26d0ce); border-radius:8px; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-12',
+    name: '花朵符号国风标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:18px; color:#555;">❀ 标题内容 ❀</div>',
+  },
+  {
+    id: 'title-13',
+    name: '双色双层边框标题',
+    category: 'title',
+    html: '<div style="padding:2px; border:1px solid #4a7dd4; border-radius:10px; margin:22px 0;"><div style="padding:10px; text-align:center; font-size:17px; font-weight:bold; color:#333; border:1px solid #4a7dd4; border-radius:8px;">标题内容</div></div>',
+  },
+  {
+    id: 'title-14',
+    name: '橙色活力圆角标题',
+    category: 'title',
+    html: '<div style="padding:10px 14px; background:#ff7d00; color:#fff; font-size:17px; border-radius:20px; display:inline-block; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-15',
+    name: '书本图标学习类标题',
+    category: 'title',
+    html: '<div style="display:flex; align-items:center; gap:10px; font-size:18px; font-weight:bold; color:#333; margin:22px 0;">📖 <span>标题内容</span></div>',
+  },
+  {
+    id: 'title-16',
+    name: '浅灰磨砂质感标题',
+    category: 'title',
+    html: '<div style="padding:12px; background:#f5f5f5; border-radius:8px; font-size:17px; text-align:center; color:#666; margin:20px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-17',
+    name: '斜角异型边框标题',
+    category: 'title',
+    html: '<div style="padding:12px; border:2px solid #7c5cbf; border-radius:16px 4px 16px 4px; text-align:center; font-size:17px; color:#7c5cbf; margin:24px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-18',
+    name: '爱心符号少女标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:17px; color:#e64384;">♥ 标题内容 ♥</div>',
+  },
+  {
+    id: 'title-19',
+    name: '顶部小三角装饰标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:26px 0;"><span style="font-size:20px; color:#4a7dd4;">▼</span><div style="margin-top:6px; font-size:18px; font-weight:bold; color:#333;">标题内容</div></div>',
+  },
+  {
+    id: 'title-20',
+    name: '红色重点强调标题',
+    category: 'title',
+    html: '<div style="padding:10px; text-align:center; font-size:17px; font-weight:bold; color:#fff; background:#f53f3f; border-radius:8px; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-21',
+    name: '圆点分割简约标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0;"><span style="font-size:14px; color:#999;">● ● ●</span><div style="margin:8px 0; font-size:17px; color:#555;">标题内容</div></div>',
+  },
+  {
+    id: 'title-22',
+    name: '火箭图标成长类标题',
+    category: 'title',
+    html: '<div style="display:flex; align-items:center; gap:8px; font-size:18px; color:#4a7dd4; margin:22px 0;">🚀 <span style="font-weight:bold;">标题内容</span></div>',
+  },
+  {
+    id: 'title-23',
+    name: '淡紫温柔背景标题',
+    category: 'title',
+    html: '<div style="padding:12px; background:#f8f4ff; border-radius:10px; text-align:center; font-size:17px; color:#7c5cbf; margin:20px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-24',
+    name: '方括号复古标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:18px; font-weight:bold; color:#333;">【 标题内容 】</div>',
+  },
+  {
+    id: 'title-25',
+    name: '彩虹细边清新标题',
+    category: 'title',
+    html: '<div style="padding:10px; border-width:2px; border-style:solid; border-image:linear-gradient(to right,#f14949,#f19e49,#f1f149,#49f156,#4982f1) 1; border-radius:8px; text-align:center; font-size:17px; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-26',
+    name: '喇叭图标公告类标题',
+    category: 'title',
+    html: '<div style="display:flex; align-items:center; gap:10px; font-size:17px; font-weight:bold; color:#d93030; margin:22px 0;">📢 <span>标题内容</span></div>',
+  },
+  {
+    id: 'title-28',
+    name: '气泡对话框标题',
+    category: 'title',
+    html: '<div style="position:relative; padding:12px 16px; background:#f5f7fa; border-radius:12px; font-size:17px; margin:26px 0;">标题内容<div style="position:absolute; bottom:-8px; left:20px; width:0; height:0; border-left:8px solid transparent; border-right:8px solid transparent; border-top:8px solid #f5f7fa;"></div></div>',
+  },
+  {
+    id: 'title-29',
+    name: '金色轻奢商务标题',
+    category: 'title',
+    html: '<div style="padding:10px; text-align:center; font-size:17px; font-weight:bold; color:#fff; background:linear-gradient(90deg,#bf953f,#fcf6ba,#b38728,#fbf5b7,#aa771c); border-radius:8px; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-30',
+    name: '音符图标音乐类标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:17px; color:#555;">🎵 标题内容 🎵</div>',
+  },
+  {
+    id: 'title-31',
+    name: '双侧竖线对称标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:18px; font-weight:bold; color:#333;">┃ 标题内容 ┃</div>',
+  },
+  {
+    id: 'title-32',
+    name: '青色清爽圆角标题',
+    category: 'title',
+    html: '<div style="padding:10px 14px; background:#36bffb; color:#fff; font-size:17px; border-radius:30px; text-align:center; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-33',
+    name: '铅笔图标笔记类标题',
+    category: 'title',
+    html: '<div style="display:flex; align-items:center; gap:8px; font-size:17px; color:#555; margin:22px 0;">✏️ <span style="font-weight:bold;">标题内容</span></div>',
+  },
+  {
+    id: 'title-34',
+    name: '水墨国风简约标题',
+    category: 'title',
+    html: '<div style="padding:10px 14px; border:1px solid #8c6d31; background:#fcfaf5; border-radius:6px; font-size:17px; color:#6d4c41; margin:20px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-35',
+    name: '闪电符号效率类标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:18px; font-weight:bold; color:#f5a623;">⚡ 标题内容</div>',
+  },
+  {
+    id: 'title-36',
+    name: '双层阴影立体标题',
+    category: 'title',
+    html: '<div style="padding:14px; background:#fff; border:1px solid #eee; border-radius:12px; box-shadow:0 4px 15px rgba(74,125,212,0.1); text-align:center; font-size:17px; font-weight:bold; color:#333; margin:24px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-37',
+    name: '小太阳温暖标题',
+    category: 'title',
+    html: '<div style="display:flex; align-items:center; gap:10px; font-size:17px; color:#ff9500; margin:22px 0;">☀️ <span>标题内容</span></div>',
+  },
+  {
+    id: 'title-38',
+    name: '深色暗黑模式标题',
+    category: 'title',
+    html: '<div style="padding:12px; background:#2a2a2a; color:#fff; font-size:17px; text-align:center; border-radius:8px; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-39',
+    name: '圆环符号简约标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:17px; color:#666;">◎ 标题内容 ◎</div>',
+  },
+  {
+    id: 'title-40',
+    name: '咖啡图标生活类标题',
+    category: 'title',
+    html: '<div style="padding:10px; background:#f8f5f0; border-radius:10px; font-size:17px; display:flex; align-items:center; gap:10px; color:#6d4c41; margin:20px 0;">☕ <span>标题内容</span></div>',
+  },
+  {
+    id: 'title-41',
+    name: '钻石符号精品标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:18px; font-weight:bold; color:#4a7dd4;">💎 标题内容</div>',
+  },
+  {
+    id: 'title-42',
+    name: '细边框斜角标题',
+    category: 'title',
+    html: '<div style="padding:10px; border:1px solid #555; border-radius:2px 12px 2px 12px; text-align:center; font-size:17px; color:#333; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-43',
+    name: '礼物图标活动类标题',
+    category: 'title',
+    html: '<div style="display:flex; align-items:center; gap:10px; font-size:17px; font-weight:bold; color:#e63946; margin:22px 0;">🎁 <span>标题内容</span></div>',
+  },
+  {
+    id: 'title-44',
+    name: '淡绿治愈背景标题',
+    category: 'title',
+    html: '<div style="padding:12px; background:#f0fff4; border-radius:10px; text-align:center; font-size:17px; color:#237d4b; margin:20px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-45',
+    name: '箭头引导标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:18px; font-weight:bold; color:#333;">➤ 标题内容 ➤</div>',
+  },
+  {
+    id: 'title-46',
+    name: '徽章样式圆角标题',
+    category: 'title',
+    html: '<div style="padding:8px 16px; background:#4a7dd4; color:#fff; font-size:16px; border-radius:30px; display:inline-block; font-weight:bold; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-47',
+    name: '枫叶图标文艺标题',
+    category: 'title',
+    html: '<div style="text-align:center; margin:24px 0; font-size:17px; color:#9c6644;">🍁 标题内容</div>',
+  },
+  {
+    id: 'title-48',
+    name: '短虚线简约标题',
+    category: 'title',
+    html: '<div style="border-bottom:1px dashed #ccc; padding-bottom:8px; font-size:18px; font-weight:bold; color:#333; margin:22px 0;">标题内容</div>',
+  },
+  {
+    id: 'title-49',
+    name: '地球仪探索类标题',
+    category: 'title',
+    html: '<div style="display:flex; align-items:center; gap:10px; font-size:17px; color:#333; margin:22px 0;">🌍 <span style="font-weight:bold;">标题内容</span></div>',
+  },
+  {
+    id: 'title-50',
+    name: '全包边精致标题',
+    category: 'title',
+    html: '<div style="padding:14px; border:1px solid #ddd; border-radius:12px; text-align:center; font-size:17px; font-weight:bold; color:#444; background:#fafafa; margin:24px 0;">标题内容</div>',
+  }
+]
