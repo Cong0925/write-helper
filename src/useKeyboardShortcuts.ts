@@ -19,6 +19,28 @@ export function unregisterShortcut(name: string) {
   delete actions[name]
 }
 
+// ── Global functions (used by both shortcuts and UI buttons) ──
+
+export function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen()
+    appState.isFullscreen = true
+  } else {
+    document.exitFullscreen()
+    appState.isFullscreen = false
+  }
+}
+
+function bossKey() {
+  // 老板键: 关闭敏感面板 → 最小化窗口
+  if (appState.activeSidePanel) {
+    appState.activeSidePanel = ''
+  }
+  import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+    getCurrentWindow().minimize()
+  })
+}
+
 export function initKeyboardShortcuts() {
   document.addEventListener('keydown', (e: KeyboardEvent) => {
     // Ctrl+N — new chapter (global)
@@ -28,10 +50,10 @@ export function initKeyboardShortcuts() {
       return
     }
 
-    // Ctrl+. — fullscreen
+    // Ctrl+. — fullscreen (works everywhere, including welcome page)
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '.') {
       e.preventDefault()
-      actions['toggleFullscreen']?.()
+      toggleFullscreen()
       return
     }
 
@@ -65,20 +87,39 @@ export function initKeyboardShortcuts() {
       return
     }
 
-    // Alt+` — boss key (hide window)
+    // Alt+` — boss key (works everywhere, including welcome page)
     if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === '`') {
       e.preventDefault()
-      actions['bossKey']?.()
+      bossKey()
+      return
+    }
+
+    // F5 — force refresh the webview (not handled by default in Tauri)
+    if (e.key === 'F5') {
+      e.preventDefault()
+      location.reload()
+      return
+    }
+
+    // F12 — open devtools (via Rust command, since JS API doesn't have it)
+    if (e.key === 'F12') {
+      e.preventDefault()
+      import('./api').then(({ openDevtools }) => {
+        openDevtools()
+      })
+      return
+    }
+
+    // Ctrl+Shift+I — open devtools (backup shortcut)
+    if (e.ctrlKey && e.shiftKey && !e.altKey && e.key === 'I') {
+      e.preventDefault()
+      import('./api').then(({ openDevtools }) => {
+        openDevtools()
+      })
       return
     }
 
     // Ctrl+0 — open settings → shortcuts section
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '0') {
-      e.preventDefault()
-      appState.settingsSection = 'shortcuts'
-      appState.showSettings = true
-      return
-    }
 
     // Ctrl+1 — outline (disabled for article projects)
 	if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === '1') {
@@ -100,8 +141,8 @@ export function initKeyboardShortcuts() {
 
     // Ctrl+F — find/replace
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'f') {
-      // Allow in input fields (Cmd+F in browser is native)
       e.preventDefault()
+      console.log('[kb] Ctrl+F, activeElement:', document.activeElement?.tagName, 'contenteditable:', document.activeElement?.getAttribute('contenteditable'))
       actions['toggleFindReplace']?.()
       return
     }

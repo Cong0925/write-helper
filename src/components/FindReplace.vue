@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, watch, onUnmounted, onMounted, computed } from 'vue'
-import { appState, type SearchMatch } from '../store'
+import { appState, cacheFileContent, getCachedContent, type SearchMatch } from '../store'
 import { searchInProjectAdv, findAndReplaceAdv, readFile, readDirectory } from '../api'
 import { getEditorView } from '../editorHelper'
 import { getTiptapEditor } from '../tiptapHelper'
+import { getActiveWysiwyg } from '../wysiwygHelper'
 
 const emit = defineEmits<{ close: [] }>()
 
@@ -51,12 +52,21 @@ const mode = ref<'find' | 'replace'>('find')
 // Inputs
 const findText = ref('')
 const replaceText = ref('')
-const scope = ref<'chapter' | 'all'>('chapter')
+const scope = ref<'chapter' | 'all' | 'file' | 'folder'>('chapter')
 
 // Options
 const caseSensitive = ref(false)
 const wholeWord = ref(false)
 const useRegex = ref(false)
+
+// Detect active editor type
+const isWysiwygMode = computed(() => !!getActiveWysiwyg())
+
+// Wysiwyg folder name (大纲/设定/人设/素材)
+const wysiwygFolder = computed(() => {
+  const w = getActiveWysiwyg()
+  return w?.folderDir || ''
+})
 
 // Match state (current chapter - editor based)
 const matches = ref<{ from: number; to: number; line: number; text: string }[]>([])
@@ -103,6 +113,14 @@ function searchInEditor() {
     searchInTiptap()
     return
   }
+
+  // Check if a WysiwygEditor (side panel) is active
+  const wysiwyg = getActiveWysiwyg()
+  if (wysiwyg) {
+    searchInWysiwyg(wysiwyg)
+    return
+  }
+
   const view = getEditorView()
   if (!view || !findText.value) {
     matches.value = []
@@ -192,9 +210,43 @@ function searchInTiptap() {
   }
 }
 
+// Search in WysiwygEditor (side panels — 大纲/设定/人设/素材)
+function searchInWysiwyg(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwyg>>) {
+  if (!findText.value) {
+    matches.value = []
+    totalMatchCount.value = 0
+    currentMatch.value = 0
+    return
+  }
+  const content = wysiwyg.getContent()
+  const re = buildRegex(findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
+  if (!re) return
+
+  const allMatches: { from: number; to: number; line: number; text: string }[] = []
+  let match: RegExpExecArray | null
+  while ((match = re.exec(content)) !== null) {
+    const line = content.slice(0, match.index).split('\n').length
+    const lineStart = content.lastIndexOf('\n', match.index - 1) + 1
+    const lineEnd = content.indexOf('\n', match.index)
+    const lineText = content.slice(lineStart, lineEnd === -1 ? content.length : lineEnd)
+    allMatches.push({ from: match.index, to: match.index + match[0].length, line, text: lineText.trim() })
+    if (match.index === re.lastIndex) re.lastIndex++
+    if (allMatches.length > 10000) break
+  }
+
+  matches.value = allMatches
+  totalMatchCount.value = allMatches.length
+  currentMatch.value = allMatches.length > 0 ? 0 : 0
+}
+
 function goToMatch(index: number) {
   if (isArticleProject.value) {
     goToTiptapMatch(index)
+    return
+  }
+  const wysiwyg = getActiveWysiwyg()
+  if (wysiwyg) {
+    goToWysiwygMatch(wysiwyg, index)
     return
   }
   const view = getEditorView()
@@ -221,6 +273,17 @@ function goToTiptapMatch(index: number) {
   editor.commands.focus()
   // Force scroll so the ProseMirror container scrolls to the match
   scrollTiptapToSelection(editor)
+}
+
+function goToWysiwygMatch(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwyg>>, index: number) {
+  if (!matches.value.length) return
+  if (index < 0) index = matches.value.length - 1
+  if (index >= matches.value.length) index = 0
+  currentMatch.value = index
+  wysiwyg.focus()
+  const m = matches.value[index]
+  // Use window.find to select the match in contenteditable
+  try { window.find(m.text, false, false, true) } catch { /* fallback */ }
 }
 
 function scrollTiptapToSelection(editor: NonNullable<ReturnType<typeof getTiptapEditor>>) {
@@ -254,8 +317,12 @@ async function searchFullBook() {
   if (!findText.value || !appState.project) return
   fullBookLoading.value = true
   try {
+    // For novel projects, only search the 分卷/ directory
+    const root = appState.project.projectType === 'novel'
+      ? appState.project.path + '/分卷'
+      : appState.project.path
     const results = await searchInProjectAdv(
-      appState.project.path,
+      root,
       findText.value,
       caseSensitive.value,
       wholeWord.value,
@@ -263,6 +330,31 @@ async function searchFullBook() {
     )
     searchResults.value = results
 
+    let count = 0
+    for (const r of results) count += r.matches.length
+    totalMatchCount.value = count
+    currentMatch.value = count > 0 ? 1 : 0
+  } catch {
+    searchResults.value = []
+  } finally {
+    fullBookLoading.value = false
+  }
+}
+
+/** Search all files in a side-panel folder (大纲/设定/人设/素材) */
+async function searchFolder(folderDir: string) {
+  if (!findText.value || !appState.project) return
+  fullBookLoading.value = true
+  try {
+    const folderPath = appState.project.path + '/' + folderDir
+    const results = await searchInProjectAdv(
+      folderPath,
+      findText.value,
+      caseSensitive.value,
+      wholeWord.value,
+      useRegex.value,
+    )
+    searchResults.value = results
     let count = 0
     for (const r of results) count += r.matches.length
     totalMatchCount.value = count
@@ -286,8 +378,13 @@ watch([findText, caseSensitive, wholeWord, useRegex], () => {
 
   if (scope.value === 'chapter') {
     searchTimer = setTimeout(() => searchInEditor(), 200)
+  } else if (scope.value === 'file' && isWysiwygMode.value) {
+    const w = getActiveWysiwyg()
+    if (w) searchTimer = setTimeout(() => searchInWysiwyg(w), 200)
+  } else if (scope.value === 'folder') {
+    fullBookLoading.value = true
+    searchTimer = setTimeout(() => searchFolder(wysiwygFolder.value || ''), 1500)
   } else {
-    // Full book: search after 1.5s debounce
     fullBookLoading.value = true
     searchTimer = setTimeout(() => searchFullBook(), 1500)
   }
@@ -297,6 +394,9 @@ watch(scope, () => {
   searchResults.value = []
   if (scope.value === 'chapter') {
     searchInEditor()
+  } else if (scope.value === 'file' && isWysiwygMode.value) {
+    const w = getActiveWysiwyg()
+    if (w) searchInWysiwyg(w)
   }
 })
 
@@ -305,11 +405,21 @@ watch(isArticleProject, (v) => {
   if (v) scope.value = 'chapter'
 })
 
+// Auto-switch scope when entering/leaving Wysiwyg mode
+watch(isWysiwygMode, (v) => {
+  if (v) scope.value = 'file'
+})
+
 // Replace handling
 async function replaceCurrent() {
   if (!findText.value) return
   if (isArticleProject.value) {
     replaceInTiptap()
+    return
+  }
+  const wysiwyg = getActiveWysiwyg()
+  if (wysiwyg) {
+    replaceInWysiwyg(wysiwyg)
     return
   }
   const view = getEditorView()
@@ -322,6 +432,7 @@ async function replaceCurrent() {
     changes: { from: m.from, to: m.to, insert: replaceText.value },
   })
   appState.currentContent = view.state.doc.toString()
+  cacheFileContent(appState.currentFile?.path, appState.currentContent)
   appState.isDirty = true
 
   // Re-search after replace
@@ -345,6 +456,16 @@ function replaceInTiptap() {
 
   appState.isDirty = true
   setTimeout(() => searchInTiptap(), 50)
+}
+
+function replaceInWysiwyg(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwyg>>) {
+  if (!matches.value.length) return
+  const m = matches.value[currentMatch.value]
+  if (!m) return
+  const content = wysiwyg.getContent()
+  const newContent = content.slice(0, m.from) + replaceText.value + content.slice(m.to)
+  wysiwyg.setContent(newContent)
+  setTimeout(() => searchInWysiwyg(wysiwyg), 50)
 }
 
 function replaceAllInTiptap() {
@@ -382,12 +503,27 @@ function replaceAllInTiptap() {
   searchInTiptap()
 }
 
+function replaceAllInWysiwyg(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwyg>>) {
+  if (!findText.value) return
+  const content = wysiwyg.getContent()
+  const re = buildRegex(findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
+  if (!re) return
+  const newContent = content.replace(re, replaceText.value)
+  wysiwyg.setContent(newContent)
+  searchInWysiwyg(wysiwyg)
+}
+
 async function replaceAll() {
   if (!findText.value) return
 
   if (scope.value === 'chapter') {
     if (isArticleProject.value) {
       replaceAllInTiptap()
+      return
+    }
+    const wysiwyg = getActiveWysiwyg()
+    if (wysiwyg) {
+      replaceAllInWysiwyg(wysiwyg)
       return
     }
     // Replace in CodeMirror editor
@@ -406,6 +542,7 @@ async function replaceAll() {
       changes: { from: 0, to: content.length, insert: newContent },
     })
     appState.currentContent = newContent
+    cacheFileContent(appState.currentFile?.path, newContent)
     appState.isDirty = true
     searchInEditor()
   } else {
@@ -426,6 +563,7 @@ async function replaceAll() {
       if (appState.currentFile) {
         const content = await readFile(appState.currentFile.path)
         appState.currentContent = content
+        // Don't cache — content was overwritten on disk by replaceAll
       }
       // Update file tree
       if (appState.project) {
@@ -436,11 +574,36 @@ async function replaceAll() {
   }
 }
 
-function goToSearchResult(m: SearchMatch) {
-  readFile(m.filePath).then(content => {
+async function goToSearchResult(m: SearchMatch) {
+  // Force-save current file to disk before switching
+  if (appState.currentFile && appState.isDirty && appState.currentContent) {
+    try {
+      await writeFile(appState.currentFile.path, appState.currentContent)
+      appState.isDirty = false
+    } catch {}
+  }
+  // Save current content to cache before switching
+  if (appState.currentFile && appState.currentContent) {
+    cacheFileContent(appState.currentFile.path, appState.currentContent)
+  }
+  const cached = getCachedContent(m.filePath)
+  if (cached !== undefined) {
+    appState.currentFile = { path: m.filePath, name: m.fileName }
+    appState.currentContent = cached
+    appState.isDirty = true
+    jumpToMatch(m)
+    return
+  }
+  try {
+    const content = await readFile(m.filePath)
     appState.currentFile = { path: m.filePath, name: m.fileName }
     appState.currentContent = content
     appState.isDirty = false
+    jumpToMatch(m)
+  } catch {}
+}
+
+function jumpToMatch(m: SearchMatch) {
     // Scroll to line/match
     setTimeout(() => {
       if (isArticleProject.value) {
@@ -479,7 +642,6 @@ function goToSearchResult(m: SearchMatch) {
         scrollIntoView: true,
       })
     }, 100)
-  })
 }
 
 onUnmounted(() => {
@@ -535,10 +697,10 @@ function escapeHtml(s: string): string {
           type="text"
           class="fr-input"
           placeholder="查找..."
-          @keydown.enter="isArticleProject || scope === 'chapter' ? nextMatch() : searchFullBook()"
+          @keydown.enter="isArticleProject || scope === 'chapter' || scope === 'file' ? nextMatch() : (scope === 'folder' ? searchFolder(wysiwygFolder) : searchFullBook())"
         />
         <span v-if="findText && totalMatchCount > 0" class="match-counter">
-          {{ scope === 'chapter' ? `${currentMatch + 1}/${totalMatchCount}` : `${totalMatchCount} 处` }}
+          {{ scope === 'chapter' || scope === 'file' ? `${currentMatch + 1}/${totalMatchCount}` : `${totalMatchCount} 处` }}
         </span>
         <button v-if="findText" class="input-clear" @click="findText = ''">✕</button>
       </div>
@@ -562,13 +724,21 @@ function escapeHtml(s: string): string {
           <button class="opt-btn" :class="{ active: useRegex }" @click="useRegex = !useRegex" title="正则表达式">.*</button>
         </div>
         <div class="fr-radio-group">
-          <label class="fr-radio"><input v-model="scope" type="radio" value="chapter" /> 本章</label>
-          <label v-if="!isArticleProject" class="fr-radio"><input v-model="scope" type="radio" value="all" /> 全书</label>
+          <!-- Wysiwyg (side panel) mode -->
+          <template v-if="isWysiwygMode">
+            <label class="fr-radio"><input v-model="scope" type="radio" value="file" /> 当前文件</label>
+            <label class="fr-radio"><input v-model="scope" type="radio" value="folder" /> 整个{{ wysiwygFolder }}文件夹</label>
+          </template>
+          <!-- CodeMirror (normal) mode -->
+          <template v-else>
+            <label class="fr-radio"><input v-model="scope" type="radio" value="chapter" /> 本章</label>
+            <label v-if="!isArticleProject" class="fr-radio"><input v-model="scope" type="radio" value="all" /> 全书</label>
+          </template>
         </div>
       </div>
 
-      <!-- Match navigation (current chapter) -->
-      <div v-if="scope === 'chapter' && totalMatchCount > 0" class="fr-nav-row">
+      <!-- Match navigation (current chapter / wysiwyg file) -->
+      <div v-if="(scope === 'chapter' || scope === 'file') && totalMatchCount > 0" class="fr-nav-row">
         <div class="fr-nav-buttons">
           <button class="fr-nav-btn" @click="prevMatch" :disabled="totalMatchCount === 0" title="上一个 (Shift+Enter)">▲</button>
           <button class="fr-nav-btn" @click="nextMatch" :disabled="totalMatchCount === 0" title="下一个 (Enter)">▼</button>
@@ -579,10 +749,10 @@ function escapeHtml(s: string): string {
         </div>
       </div>
 
-      <!-- Replace buttons for full book (novel only) -->
-      <div v-if="!isArticleProject && scope === 'all' && findText" class="fr-nav-row">
-        <button class="fr-action-btn" @click="searchFullBook" :disabled="fullBookLoading">
-          {{ fullBookLoading ? '搜索中...' : '搜索全书' }}
+      <!-- Replace buttons for full book / folder (novel only) -->
+      <div v-if="!isArticleProject && (scope === 'all' || scope === 'folder') && findText" class="fr-nav-row">
+        <button class="fr-action-btn" @click="scope === 'folder' ? searchFolder(wysiwygFolder) : searchFullBook()" :disabled="fullBookLoading">
+          {{ fullBookLoading ? '搜索中...' : (scope === 'folder' ? ('搜索' + wysiwygFolder + '文件夹') : '搜索全书') }}
         </button>
         <button v-if="mode === 'replace' && totalMatchCount > 0" class="fr-action-btn primary" @click="replaceAll">
           全部替换
@@ -593,8 +763,8 @@ function escapeHtml(s: string): string {
       <div v-if="fullBookLoading" class="fr-loading">搜索中...</div>
 
       <!-- === Match results display === -->
-      <!-- Current chapter results (inline, like VS Code) -->
-      <div v-if="scope === 'chapter' && totalMatchCount > 0" class="fr-results">
+      <!-- Current chapter / file results -->
+      <div v-if="(scope === 'chapter' || scope === 'file') && totalMatchCount > 0" class="fr-results">
         <div class="fr-results-header">
           {{ totalMatchCount }} 个匹配
         </div>
@@ -612,8 +782,8 @@ function escapeHtml(s: string): string {
         </div>
       </div>
 
-      <!-- Full book results (novel only) -->
-      <div v-if="!isArticleProject && scope === 'all' && searchResults.length > 0" class="fr-results">
+      <!-- Full book / folder results (novel only) -->
+      <div v-if="!isArticleProject && (scope === 'all' || scope === 'folder') && searchResults.length > 0" class="fr-results">
         <div class="fr-results-header">
           共 {{ totalMatchCount }} 个结果，{{ searchResults.length }} 个文件
         </div>
@@ -639,7 +809,7 @@ function escapeHtml(s: string): string {
 <style scoped>
 .find-replace-panel {
   position: fixed;
-  z-index: 200;
+  z-index: 99999;
   width: 380px;
   max-height: 70vh;
   background: var(--bg-secondary);

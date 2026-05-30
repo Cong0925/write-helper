@@ -3,7 +3,7 @@ import { computed, watch, ref, onMounted, onUnmounted } from 'vue'
 import { Codemirror } from 'vue-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { basicSetup, EditorView } from 'codemirror'
-import { appState } from '../store'
+import { appState, cacheFileContent } from '../store'
 import { writeFile, renameFile, readDirectory } from '../api'
 import { setEditorView, getEditorView } from '../editorHelper'
 import { registerShortcut, unregisterShortcut } from '../useKeyboardShortcuts'
@@ -30,6 +30,28 @@ const extensions = computed<any[]>(() => {
 })
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+// ── Dev flag: textarea replacement for comparison ──
+const __DEV_MODE__ = false
+
+function onTextareaInput(e: Event) {
+  const val = (e.target as HTMLTextAreaElement).value
+  appState.currentContent = val
+  appState.isDirty = true
+  scheduleSave()
+  updateWordCount(val)
+}
+
+// ── File switching strategy ──────────────────────────────────────
+// Codemirror uses :key="currentFile?.path" + :model-value="currentContent":
+//   1. :key forces Vue to destroy/re-create the component on every file
+//      switch — no stale state can linger from the previous file.
+//   2. :model-value lets vue-codemirror's internal watch + setDoc() push
+//      external content changes to the editor (with loop guard built in).
+//   3. @update:model-value captures user edits back into appState.
+// No contentFromEditor / _syncingContent flags needed — the component's
+// own guards (value !== modelValue before emit, newVal !== getDoc before
+// dispatch) prevent all update loops.
 
 // Editable title
 const isEditingTitle = ref(false)
@@ -90,11 +112,6 @@ function handleTitleKeydown(e: KeyboardEvent) {
   }
 }
 
-// Expose editor view for external use (find/replace, jump-to-line)
-function handleReady(payload: { view: EditorView }) {
-  setEditorView(payload.view)
-}
-
 // Jump to line when appState.jumpToLine changes
 watch(() => appState.jumpToLine, (lineNumber) => {
   if (lineNumber === null) return
@@ -111,15 +128,18 @@ watch(() => appState.jumpToLine, (lineNumber) => {
   appState.jumpToLine = null
 })
 
-// Auto-save and word count
-function onUpdate(update: any) {
-  const doc = update.state.doc.toString()
-  if (appState.currentContent !== doc) {
-    appState.currentContent = doc
-    appState.isDirty = true
-    scheduleSave()
-  }
-  updateWordCount(doc)
+// ── User edit → sync to appState ──
+function onContentChange(value: string) {
+  appState.currentContent = value
+  cacheFileContent(appState.currentFile?.path, value)
+  appState.isDirty = true
+  scheduleSave()
+  updateWordCount(value)
+}
+
+// ── Expose editor view reference (for jump-to-line, context menu, etc.) ──
+function handleReady(payload: { view: EditorView }) {
+  setEditorView(payload.view)
 }
 
 async function saveCurrentFile() {
@@ -146,7 +166,7 @@ function scheduleSave() {
   if (!appState.currentFile || !appState.isDirty) return
   if (appState.autoSave) {
     if (saveTimer) clearTimeout(saveTimer)
-    saveTimer = setTimeout(() => saveCurrentFile(), 1500)
+    saveTimer = setTimeout(() => saveCurrentFile(), 500)
   }
 }
 
@@ -170,6 +190,7 @@ function updateWordCount(text: string) {
 watch(() => appState.currentFile, async () => {
   if (saveTimer) clearTimeout(saveTimer)
   isEditingTitle.value = false
+  appState.isDirty = false
   if (appState.currentContent) {
     updateWordCount(appState.currentContent)
   }
@@ -246,6 +267,7 @@ function editorCut() {
     navigator.clipboard.writeText(text)
     view.dispatch({ changes: { from: sel.from, to: sel.to, insert: '' } })
     appState.currentContent = view.state.doc.toString()
+    cacheFileContent(appState.currentFile?.path, appState.currentContent)
     appState.isDirty = true
   }
 }
@@ -259,6 +281,7 @@ async function editorPaste() {
     const sel = view.state.selection.main
     view.dispatch({ changes: { from: sel.from, to: sel.to, insert: text } })
     appState.currentContent = view.state.doc.toString()
+    cacheFileContent(appState.currentFile?.path, appState.currentContent)
     appState.isDirty = true
   } catch {}
 }
@@ -336,14 +359,22 @@ const editorStyle = computed(() => ({
         'grid-dashed': appState.gridStyle === 'dashed',
         'grid-dots': appState.gridStyle === 'dots'
       }" :style="editorStyle">
+        <textarea
+          v-if="__DEV_MODE__"
+          :value="appState.currentContent"
+          @input="onTextareaInput"
+          style="width:100%;height:100%;font-size:15px;resize:none;border:1px solid var(--border-color);border-radius:8px;padding:20px 24px;background:var(--bg-secondary);color:var(--text-primary);font-family:inherit;"
+        />
         <Codemirror
+          v-else
+          :key="appState.currentFile?.path || 'empty'"
           :model-value="appState.currentContent"
           :extensions="extensions"
           :disabled="false"
           :indent-with-tab="true"
           :tab-size="2"
           :autofocus="true"
-          @update="onUpdate"
+          @update:model-value="onContentChange"
           @ready="handleReady"
         />
       </div>

@@ -70,6 +70,33 @@ export interface RuleItem {
   correct: string
 }
 
+// ─── File Content Cache ──────────────────────────────────
+// Persists unsaved edits when switching between files.
+// Key: normalized file path (forward slashes).
+// Non-reactive to avoid unnecessary reactivity overhead.
+const _contentCache: Record<string, string> = {}
+
+export function cacheFileContent(path: string | null | undefined, content: string) {
+  if (!path) return
+  _contentCache[path.replace(/\\/g, '/')] = content
+}
+
+export function getCachedContent(path: string): string | undefined {
+  return _contentCache[path.replace(/\\/g, '/')]
+}
+
+export function removeCachedContent(path: string) {
+  delete _contentCache[path.replace(/\\/g, '/')]
+}
+
+export function clearAllContentCache() {
+  Object.keys(_contentCache).forEach(k => delete _contentCache[k])
+}
+
+export function getCacheSize(): number {
+  return Object.keys(_contentCache).length
+}
+
 export interface CustomRuleGroup {
   name: string
   enabled: boolean

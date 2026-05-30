@@ -161,3 +161,8 @@ export async function deleteProjectFolder(path: string): Promise<void> {
 export async function renameProjectConfig(path: string, newName: string): Promise<void> {
   return invoke<void>('cmd_rename_project_config', { path, newName })
 }
+
+/** Open the browser DevTools panel (F12/Ctrl+Shift+I) */
+export function openDevtools() {
+  invoke('cmd_open_devtools')
+}

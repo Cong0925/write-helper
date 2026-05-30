@@ -330,7 +330,7 @@ onMounted(async () => {
         <p>选择文件查看内容</p>
       </div>
       <template v-else>
-        <WysiwygEditor v-model="selectedContent" @update:model-value="onContentInput" />
+        <WysiwygEditor v-model="selectedContent" :folder-dir="props.dirName" @update:model-value="onContentInput" />
       </template>
     </div>
     <!-- Right: file list -->

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { appState, type SearchResult, type SearchMatch } from '../store'
+import { appState, cacheFileContent, getCachedContent, type SearchResult, type SearchMatch } from '../store'
 import { searchInProject, searchInProjectAdv, readFile } from '../api'
 
 const props = defineProps<{ query: string }>()
@@ -143,6 +143,27 @@ function toggleWord() { wholeWord.value = !wholeWord.value }
 function toggleRegex() { useRegex.value = !useRegex.value }
 
 async function goToMatch(m: SearchMatch) {
+  // Force-save current file to disk before switching
+  if (appState.currentFile && appState.isDirty && appState.currentContent) {
+    try {
+      const { writeFile } = await import('../api')
+      await writeFile(appState.currentFile.path, appState.currentContent)
+      appState.isDirty = false
+    } catch {}
+  }
+  // Save current file content to cache before switching
+  if (appState.currentFile && appState.currentContent) {
+    cacheFileContent(appState.currentFile.path, appState.currentContent)
+  }
+  // Try cache first
+  const cached = getCachedContent(m.filePath)
+  if (cached !== undefined) {
+    appState.currentFile = { path: m.filePath, name: m.fileName }
+    appState.currentContent = cached
+    appState.isDirty = true
+    appState.jumpToLine = m.lineNumber
+    return
+  }
   try {
     const content = await readFile(m.filePath)
     appState.currentFile = { path: m.filePath, name: m.fileName }

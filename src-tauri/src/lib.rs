@@ -264,6 +264,11 @@ fn cmd_delete_project_folder(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn cmd_open_devtools(webview_window: tauri::WebviewWindow) {
+    webview_window.open_devtools();
+}
+
+#[tauri::command]
 fn cmd_move_item(old_path: String, new_dir: String) -> Result<(), String> {
     let old = std::path::Path::new(&old_path);
     if !old.exists() {
@@ -501,6 +506,7 @@ pub fn run() {
             cmd_open_in_explorer,
             cmd_delete_project_folder,
             cmd_move_item,
+            cmd_open_devtools,
             config::cmd_get_config,
             config::cmd_get_all_config,
             config::cmd_set_config,

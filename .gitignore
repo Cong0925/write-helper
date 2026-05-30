@@ -33,5 +33,11 @@ src-tauri/gen
 # Claude config
 .claude/
 
+# Local-only Cargo configuration (e.g., fixed WebView2 path)
+.cargo/config.toml
+
 # Backup files
 backup/
+.cargo-home/
+.agents/
+skills-lock.json

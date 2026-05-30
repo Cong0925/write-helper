@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import TurndownService from 'turndown'
+import { setActiveWysiwyg, getActiveWysiwyg } from '../wysiwygHelper'
 
 const props = defineProps<{
   modelValue: string
+  folderDir?: string    // e.g. "大纲", "设定", "人设", "素材" — for folder-scoped search
 }>()
 
 const emit = defineEmits<{
@@ -64,6 +66,44 @@ function onInput() {
   suppressRender = true
   emit('update:modelValue', md)
 }
+
+function onWysiwygKeydown(e: KeyboardEvent) {
+  // Ctrl+F → toggle find/replace panel
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault()
+    e.stopPropagation()
+    console.log('[wysiwyg] Ctrl+F intercepted on contenteditable')
+    import('../store').then(({ appState }) => {
+      appState.showFindReplace = !appState.showFindReplace
+    })
+    return
+  }
+}
+
+function onFocus() {
+  if (!editorRef.value) return
+  setActiveWysiwyg({
+    el: editorRef.value,
+    folderDir: props.folderDir,
+    getContent: () => props.modelValue,
+    setContent: (val: string) => { suppressRender = true; emit('update:modelValue', val) },
+    focus: () => editorRef.value?.focus(),
+  })
+}
+
+function onBlur() {
+  setTimeout(() => {
+    if (getActiveWysiwyg()?.el === editorRef.value) {
+      setActiveWysiwyg(null)
+    }
+  }, 100)
+}
+
+onUnmounted(() => {
+  if (getActiveWysiwyg()?.el === editorRef.value) {
+    setActiveWysiwyg(null)
+  }
+})
 
 /* ---- Toolbar commands ---- */
 function exec(cmd: string, value?: string) {
@@ -162,7 +202,7 @@ function onPaste(e: ClipboardEvent) {
       <span class="wys-tb-sep"></span>
       <button class="wys-tb-btn" title="行内代码" @click="wrapInlineCode">&lt;/&gt;</button>
     </div>
-    <div ref="editorRef" contenteditable class="wysiwyg-editor" @input="onInput" @paste="onPaste"></div>
+    <div ref="editorRef" contenteditable class="wysiwyg-editor" @input="onInput" @paste="onPaste" @focus="onFocus" @blur="onBlur" @keydown="onWysiwygKeydown"></div>
   </div>
 </template>
 

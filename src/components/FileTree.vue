@@ -5,7 +5,7 @@ let sessionSkipDelete = false
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { appState, type FileEntry } from '../store'
+import { appState, cacheFileContent, getCachedContent, removeCachedContent, type FileEntry } from '../store'
 import { readFile, readDirectory, createFile, renameItem, deleteItem, getNextNumber } from '../api'
 import { useCtxMenu } from '../useCtxMenu'
 import { dialog } from '../composables/useDialog'
@@ -97,16 +97,39 @@ async function openFile(entry: FileEntry) {
     return
   }
 
-  // If auto-save is off and there are unsaved changes, prompt to save first
-  if (!appState.autoSave && appState.isDirty && appState.currentFile) {
-    const ok = await dialog.confirm(`「${appState.currentFile.name}」有未保存的修改，是否保存后再切换？\n\n确定=保存并切换   取消=放弃修改并切换`)
-    if (ok) {
+  // ── Force-save unsaved changes to disk before switching away ──
+  if (appState.currentFile && appState.isDirty && appState.currentContent) {
+    if (!appState.autoSave) {
+      const ok = await dialog.confirm(`「${appState.currentFile.name}」有未保存的修改，是否保存后再切换？\n\n确定=保存并切换   取消=放弃修改并切换`)
+      if (ok) {
+        try {
+          const { writeFile } = await import('../api')
+          await writeFile(appState.currentFile.path, appState.currentContent)
+          appState.isDirty = false
+        } catch { await dialog.alert('保存失败') }
+      }
+    } else {
+      // Auto-save is on: save immediately instead of waiting for the 1.5s timer
       try {
         const { writeFile } = await import('../api')
         await writeFile(appState.currentFile.path, appState.currentContent)
         appState.isDirty = false
-      } catch { await dialog.alert('保存失败') }
+      } catch { /* best-effort */ }
     }
+  }
+
+  // Save current file's content to cache (preserves state even after switching away)
+  if (appState.currentFile && appState.currentContent) {
+    cacheFileContent(appState.currentFile.path, appState.currentContent)
+  }
+
+  // Check cache first — restores unsaved edits if this file was previously opened
+  const cached = getCachedContent(entry.path)
+  if (cached !== undefined) {
+    appState.currentFile = { path: entry.path, name: entry.name }
+    appState.currentContent = cached
+    appState.isDirty = true  // cached content may have unsaved edits
+    return
   }
 
   try {
@@ -159,6 +182,8 @@ async function doDelete(entry: FileEntry) {
   if (deleting.value.has(entry.path)) return
   deleting.value.add(entry.path)
   try {
+    // Clean up cache before deleting
+    removeCachedContent(entry.path)
     await deleteItem(entry.path)
     if (appState.currentFile?.path === entry.path) {
       appState.currentFile = null

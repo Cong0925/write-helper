@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, computed } from 'vue'
-import { appState, articleProjectTypes } from '../store'
+import { appState, articleProjectTypes, clearAllContentCache } from '../store'
 import { getEditorView } from '../editorHelper'
 import { undo as cmUndo, redo as cmRedo } from '@codemirror/commands'
 import { registerShortcut, unregisterShortcut } from '../useKeyboardShortcuts'
 import { formatCurrentDoc } from '../formatDoc'
+import { toggleFullscreen } from '../useKeyboardShortcuts'
 
 function backToWelcome() {
   appState.project = null
@@ -12,6 +13,7 @@ function backToWelcome() {
   appState.currentFile = null
   appState.currentContent = ''
   appState.isDirty = false
+  clearAllContentCache()
   appState.view = 'welcome'
 }
 
@@ -24,15 +26,10 @@ const isArticleProject = computed(() => {
   return (articleProjectTypes as readonly string[]).includes(pt)
 })
 
-function toggleFullscreen() {
-  if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen()
-    appState.isFullscreen = true
-  } else {
-    document.exitFullscreen()
-    appState.isFullscreen = false
-  }
-}
+// F11 退出全屏监听
+document.addEventListener('fullscreenchange', () => {
+  appState.isFullscreen = !!document.fullscreenElement
+})
 
 function toggleFindReplace() {
   appState.showFindReplace = !appState.showFindReplace
@@ -48,13 +45,7 @@ function redo() {
   if (view) cmRedo(view)
 }
 
-// Listen for F11 to exit fullscreen
-document.addEventListener('fullscreenchange', () => {
-  appState.isFullscreen = !!document.fullscreenElement
-})
-
 onMounted(() => {
-  registerShortcut('toggleFullscreen', toggleFullscreen)
   registerShortcut('toggleFindReplace', toggleFindReplace)
   registerShortcut('formatDoc', formatCurrentDoc)
   registerShortcut('showOutline', () => {
@@ -63,24 +54,13 @@ onMounted(() => {
   registerShortcut('showSettingsPanel', () => {
     appState.activeSidePanel = appState.activeSidePanel === 'world' ? '' : 'world'
   })
-  registerShortcut('bossKey', () => {
-    // 老板键: 关闭敏感面板 → 最小化窗口
-    if (appState.activeSidePanel) {
-      appState.activeSidePanel = ''
-    }
-    import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
-      getCurrentWindow().minimize()
-    })
-  })
 })
 
 onUnmounted(() => {
-  unregisterShortcut('toggleFullscreen')
   unregisterShortcut('toggleFindReplace')
   unregisterShortcut('formatDoc')
   unregisterShortcut('showOutline')
   unregisterShortcut('showSettingsPanel')
-  unregisterShortcut('bossKey')
 })
 </script>
 

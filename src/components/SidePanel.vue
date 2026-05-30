@@ -949,7 +949,8 @@ watch(() => appState.sidePanelMode, (mode) => {
 /* Float mode: overlay */
 .side-panel:not(.panel-docked) {
   position: fixed;
-  max-height: 90vh;
+  height: 80vh;
+  max-height: 80vh;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.18);

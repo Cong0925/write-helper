@@ -69,7 +69,7 @@ export function proofreadText(
   const doCustom = options?.custom !== false
 
   const typos = doTypo ? checkTypos(text).map(t => ({ ...t, lineNum: t.line, colNum: t.col })) : []
-  const sensitive = doSensitive ? checkSensitive(text, sensitiveWords).map(t => ({ ...t, lineNum: t.line, colNum: t.col })) : []
+  const sensitive = doSensitive ? checkSensitive(text, sensitiveWords).map(t => ({ ...t, wrong: t.word, lineNum: t.line, colNum: t.col })) : []
   const format = doFormat ? checkFormat(text).map(t => ({ ...t, lineNum: t.line, colNum: t.col })) : []
   const grammar = doGrammar ? checkGrammar(text).map(t => ({ ...t, lineNum: t.line, colNum: t.col })) : []
   const custom = doCustom ? checkCustom(text, customRuleGroups).map(t => ({ ...t, lineNum: t.line, colNum: t.col })) : []

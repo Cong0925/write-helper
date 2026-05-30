@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch, onUnmounted } from 'vue'
-import { appState, type FileEntry } from '../store'
+import { appState, cacheFileContent, getCachedContent, removeCachedContent, type FileEntry } from '../store'
 import { readDirectory, createFile, createDirectory, getNextNumber, readFile, deleteItem, moveItem } from '../api'
 import { registerShortcut, unregisterShortcut } from '../useKeyboardShortcuts'
 import { dialog } from '../composables/useDialog'
@@ -90,7 +90,19 @@ async function handleNewChapter(targetVolume?: string) {
     await loadVolumes()
     // Focus the new chapter for inline rename
     editingPath.value = `${target}/${name}.md`
-    // Open the file
+    // Force-save current file to disk before switching
+    if (appState.currentFile && appState.isDirty && appState.currentContent) {
+      try {
+        const { writeFile } = await import('../api')
+        await writeFile(appState.currentFile.path, appState.currentContent)
+        appState.isDirty = false
+      } catch {}
+    }
+    // Save current file content to cache before opening new one
+    if (appState.currentFile && appState.currentContent) {
+      cacheFileContent(appState.currentFile.path, appState.currentContent)
+    }
+    // Read and open the new file
     const content = await readFile(`${target}/${name}.md`)
     appState.currentFile = { path: `${target}/${name}.md`, name: `${name}.md` }
     appState.currentContent = content
@@ -113,6 +125,18 @@ async function handleNewVolume() {
     await createFile(`${newVolPath}/${chapterName}`)
     await loadVolumes()
     appState.activeVolume = newVolPath
+    // Force-save current file to disk before switching
+    if (appState.currentFile && appState.isDirty && appState.currentContent) {
+      try {
+        const { writeFile } = await import('../api')
+        await writeFile(appState.currentFile.path, appState.currentContent)
+        appState.isDirty = false
+      } catch {}
+    }
+    // Save current file content to cache before switching
+    if (appState.currentFile && appState.currentContent) {
+      cacheFileContent(appState.currentFile.path, appState.currentContent)
+    }
     // Open the first chapter
     const content = await readFile(`${newVolPath}/${chapterName}.md`)
     appState.currentFile = { path: `${newVolPath}/${chapterName}.md`, name: `${chapterName}.md` }
@@ -283,7 +307,15 @@ async function volDelete() {
   const v = volMenu.value; if (!v.path) return; closeVolMenu()
   if (!await dialog.confirm(`删除整卷「${v.name}」？此操作不可恢复！`)) return
   try {
+    // Clean up cache for files inside the deleted volume
+    const volPath = v.path.replace(/\\/g, '/')
+    // removeCachedContent will be called per-file when the filesystem delete triggers
     await deleteItem(v.path)
+    // If the current file is inside the deleted volume, clear editor
+    if (appState.currentFile?.path.replace(/\\/g, '/').startsWith(volPath)) {
+      appState.currentFile = null
+      appState.currentContent = ''
+    }
     await loadVolumes()
   } catch { await dialog.alert('删除失败') }
 }

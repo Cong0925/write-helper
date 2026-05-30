@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { appState, type FileEntry } from '../store'
+import { appState, cacheFileContent, getCachedContent, removeCachedContent, type FileEntry } from '../store'
 import { readDirectory, createFile, readFile, deleteItem, renameFile, openInExplorer } from '../api'
 import { dialog } from '../composables/useDialog'
 import { registerShortcut, unregisterShortcut } from '../useKeyboardShortcuts'
@@ -80,6 +80,19 @@ let selectStamp = 0
 
 async function selectArticle(entry: FileEntry) {
   const stamp = ++selectStamp
+  // Save current content to cache before switching
+  if (appState.currentFile && appState.currentContent) {
+    cacheFileContent(appState.currentFile.path, appState.currentContent)
+  }
+  // Try cache first
+  const cached = getCachedContent(entry.path)
+  if (cached !== undefined) {
+    if (stamp !== selectStamp) return
+    appState.currentFile = { path: entry.path, name: entry.name }
+    appState.currentContent = cached
+    appState.isDirty = true
+    return
+  }
   try {
     const content = await readFile(entry.path)
     if (stamp !== selectStamp) return // stale: user clicked another file
@@ -112,14 +125,15 @@ async function handleNewArticle() {
   try {
     await createFile(filePath)
     await loadArticles()
-    // Only auto-open if no file is currently open
-    if (!appState.currentFile) {
-      editingPath.value = filePath
-      const content = await readFile(filePath)
-      appState.currentFile = { path: filePath, name: `${name}${ext}` }
-      appState.currentContent = content
-      appState.isDirty = false
+    // Always open the new file; save current to cache first
+    if (appState.currentFile && appState.currentContent) {
+      cacheFileContent(appState.currentFile.path, appState.currentContent)
     }
+    editingPath.value = filePath
+    const content = await readFile(filePath)
+    appState.currentFile = { path: filePath, name: `${name}${ext}` }
+    appState.currentContent = content
+    appState.isDirty = false
   } catch {}
 }
 
@@ -167,6 +181,7 @@ async function handleDelete(entry: FileEntry) {
   const ok = await dialog.confirm(`删除文章「${articleTitle(entry.name)}」？此操作不可恢复！`)
   if (!ok) return
   try {
+    removeCachedContent(entry.path)
     await deleteItem(entry.path)
     if (appState.currentFile?.path === entry.path) {
       appState.currentFile = null
