@@ -139,11 +139,12 @@ export function initKeyboardShortcuts() {
 	  return
 	}
 
-    // Ctrl+F — find/replace
+    // Ctrl+F — find/replace (only opens, never closes)
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'f') {
       e.preventDefault()
-      console.log('[kb] Ctrl+F, activeElement:', document.activeElement?.tagName, 'contenteditable:', document.activeElement?.getAttribute('contenteditable'))
-      actions['toggleFindReplace']?.()
+      if (!appState.showFindReplace) {
+        actions['openFindReplace']?.()
+      }
       return
     }
 

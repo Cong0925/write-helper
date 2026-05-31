@@ -3,6 +3,8 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { appState } from '../store'
 import type { FileEntry } from '../store'
 import WysiwygEditor from './WysiwygEditor.vue'
+import { eventBus } from '../composables/useEventBus'
+import { getWysiwygByFolder } from '../wysiwygHelper'
 
 const props = defineProps<{
   dirName: string
@@ -80,10 +82,12 @@ async function openFolderFile(entry: FileEntry) {
   if (entry.isDir) {
     selectedFile.value = null
     selectedContent.value = ''
+    appState.sidePanelFileName = ''
     toggleFolder(entry.path)
     return
   }
   selectedFile.value = entry
+  appState.sidePanelFileName = entry.name
   contentLoading.value = true
   contentDirty = true
   try {
@@ -314,10 +318,33 @@ watch(actionMenuPath, (v) => {
   }
 })
 let menuCleanup: (() => void) | null = null
-onUnmounted(() => menuCleanup?.())
-
 onMounted(async () => {
   await loadFolderFiles()
+  // Listen for external requests to open a file (from FindReplace full-folder search)
+  const offFile = eventBus.on('panel:openFile', async ({ folderDir, filePath, fileName, matchIndex, query }) => {
+    if (folderDir !== props.dirName) return
+    await openFolderFile({ path: filePath, name: fileName, isDir: false })
+    // File loaded — position to the requested match
+    if (matchIndex !== undefined && query) {
+      await nextTick()
+      const wys = getWysiwygByFolder(folderDir)
+      if (wys && wys.el && document.body.contains(wys.el)) {
+        wys.focus()
+        const { selectNthMatchInElement, scrollWysiwygToSelection } = await import('../wysiwygHelper')
+        selectNthMatchInElement(wys.el, query, matchIndex)
+        scrollWysiwygToSelection(wys)
+      }
+    }
+  })
+  // Listen for bulk-refresh requests (after replace-all)
+  const offRefresh = eventBus.on('panel:refreshContent', async ({ folderDir }) => {
+    if (folderDir !== props.dirName || !selectedFile.value || selectedFile.value.isDir) return
+    try {
+      const { readFile } = await import('../api')
+      selectedContent.value = await readFile(selectedFile.value.path)
+    } catch { /* ignore */ }
+  })
+  onUnmounted(() => { offFile(); offRefresh(); menuCleanup?.(); })
 })
 </script>
 

@@ -2,7 +2,8 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import TurndownService from 'turndown'
-import { setActiveWysiwyg, getActiveWysiwyg } from '../wysiwygHelper'
+import { setActiveWysiwyg, getActiveWysiwyg, registerWysiwyg, unregisterWysiwyg } from '../wysiwygHelper'
+import { appState } from '../store'
 
 const props = defineProps<{
   modelValue: string
@@ -49,6 +50,21 @@ turndownService.addRule('lineBreak', {
 })
 
 onMounted(() => {
+  // Register in the global registry for FindReplace target dropdown
+  const folder = props.folderDir || '_default'
+  registerWysiwyg(folder, {
+    el: editorRef.value,
+    folderDir: props.folderDir,
+    getContent: () => props.modelValue,
+    setContent: (val: string) => {
+      suppressRender = true
+      emit('update:modelValue', val)
+      // Re-render immediately so the editor display stays in sync
+      // (the watcher skips rendering when suppressRender is set)
+      renderMarkdown(val)
+    },
+    focus: () => editorRef.value?.focus(),
+  })
   renderMarkdown(props.modelValue || '')
 })
 
@@ -68,14 +84,18 @@ function onInput() {
 }
 
 function onWysiwygKeydown(e: KeyboardEvent) {
-  // Ctrl+F → toggle find/replace panel
+  // Ctrl+F → open find/replace panel (only opens, never closes)
   if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
     e.preventDefault()
     e.stopPropagation()
-    console.log('[wysiwyg] Ctrl+F intercepted on contenteditable')
-    import('../store').then(({ appState }) => {
-      appState.showFindReplace = !appState.showFindReplace
-    })
+    if (!appState.showFindReplace) {
+      // Capture selected text in the Wysiwyg editor
+      const sel = window.getSelection()
+      if (sel && !sel.isCollapsed) {
+        appState.findInitialText = sel.toString()
+      }
+      appState.showFindReplace = true
+    }
     return
   }
 }
@@ -86,7 +106,11 @@ function onFocus() {
     el: editorRef.value,
     folderDir: props.folderDir,
     getContent: () => props.modelValue,
-    setContent: (val: string) => { suppressRender = true; emit('update:modelValue', val) },
+    setContent: (val: string) => {
+      suppressRender = true
+      emit('update:modelValue', val)
+      renderMarkdown(val)
+    },
     focus: () => editorRef.value?.focus(),
   })
 }
@@ -103,6 +127,7 @@ onUnmounted(() => {
   if (getActiveWysiwyg()?.el === editorRef.value) {
     setActiveWysiwyg(null)
   }
+  unregisterWysiwyg(props.folderDir || '_default')
 })
 
 /* ---- Toolbar commands ---- */

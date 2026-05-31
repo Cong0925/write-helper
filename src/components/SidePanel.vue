@@ -22,11 +22,17 @@ const panelTitle = computed(() => {
     material: '素材',
     ai: 'AI 助手',
   }
-  return titles[appState.activeSidePanel] || ''
+  const base = titles[appState.activeSidePanel] || ''
+  // Append current file name if one is open
+  if (appState.sidePanelFileName) {
+    return base + '/' + appState.sidePanelFileName
+  }
+  return base
 })
 
 function doClose() {
   appState.activeSidePanel = ''
+  appState.sidePanelFileName = ''
 }
 
 /* ---- Panel sizing ---- */
@@ -583,6 +589,8 @@ watch(aiEnabled, () => {
 
 /* Reposition on panel type change */
 watch(() => appState.activeSidePanel, (id) => {
+  // Clear file name when switching panels or closing
+  appState.sidePanelFileName = ''
   if (!id) return
   pos.value.x = Math.max(0, window.innerWidth - panelWidth.value - 52)
 })

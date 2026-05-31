@@ -119,6 +119,7 @@ export const appState = reactive({
   searchExpanded: new Set<string>(),
   isSearching: false,
   showFindReplace: false,
+  findInitialText: '',  // transient: set before opening, consumed by FindReplace.vue on mount
   findScope: 'chapter' as 'chapter' | 'all',
   isFullscreen: false,
   // Jump to line in editor
@@ -148,6 +149,7 @@ export const appState = reactive({
   // Side panel
   activeSidePanel: '',
   sidePanelMode: 'float' as 'float' | 'docked',
+  sidePanelFileName: '',  // current file name shown in side panel header
   // Background settings panel
   showBgSettings: false,
   lightSkin: 'default',

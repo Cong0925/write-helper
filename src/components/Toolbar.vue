@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, computed } from 'vue'
 import { appState, articleProjectTypes, clearAllContentCache } from '../store'
 import { getEditorView } from '../editorHelper'
+import { getTiptapEditor } from '../tiptapHelper'
 import { undo as cmUndo, redo as cmRedo } from '@codemirror/commands'
 import { registerShortcut, unregisterShortcut } from '../useKeyboardShortcuts'
 import { formatCurrentDoc } from '../formatDoc'
@@ -31,8 +32,39 @@ document.addEventListener('fullscreenchange', () => {
   appState.isFullscreen = !!document.fullscreenElement
 })
 
+function openFindReplace() {
+  // Capture selected text before the panel opens (it steals focus)
+  const sel = window.getSelection()
+  if (sel && !sel.isCollapsed) {
+    appState.findInitialText = sel.toString()
+  } else {
+    // Also check CodeMirror selection
+    const view = getEditorView()
+    if (view) {
+      const { from, to } = view.state.selection.main
+      if (from !== to) {
+        appState.findInitialText = view.state.sliceDoc(from, to)
+      }
+    }
+    if (!appState.findInitialText) {
+      const editor = getTiptapEditor()
+      if (editor) {
+        const { from, to } = editor.state.selection
+        if (from !== to) {
+          appState.findInitialText = editor.state.doc.textBetween(from, to)
+        }
+      }
+    }
+  }
+  appState.showFindReplace = true
+}
+
 function toggleFindReplace() {
-  appState.showFindReplace = !appState.showFindReplace
+  if (appState.showFindReplace) {
+    appState.showFindReplace = false
+  } else {
+    openFindReplace()
+  }
 }
 
 function undo() {
@@ -47,6 +79,7 @@ function redo() {
 
 onMounted(() => {
   registerShortcut('toggleFindReplace', toggleFindReplace)
+  registerShortcut('openFindReplace', openFindReplace)
   registerShortcut('formatDoc', formatCurrentDoc)
   registerShortcut('showOutline', () => {
     appState.activeSidePanel = appState.activeSidePanel === 'outline' ? '' : 'outline'
@@ -58,6 +91,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   unregisterShortcut('toggleFindReplace')
+  unregisterShortcut('openFindReplace')
   unregisterShortcut('formatDoc')
   unregisterShortcut('showOutline')
   unregisterShortcut('showSettingsPanel')

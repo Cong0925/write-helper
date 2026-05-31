@@ -1,26 +1,54 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted, onMounted, computed } from 'vue'
-import { appState, cacheFileContent, getCachedContent, type SearchMatch } from '../store'
-import { searchInProjectAdv, findAndReplaceAdv, readFile, readDirectory } from '../api'
+import { ref, watch, onUnmounted, onMounted, computed, nextTick } from 'vue'
+import { appState, cacheFileContent, getCachedContent, clearAllContentCache, type SearchMatch } from '../store'
+import { searchInProjectAdv, findAndReplaceAdv, readFile, readDirectory, writeFile } from '../api'
 import { getEditorView } from '../editorHelper'
 import { getTiptapEditor } from '../tiptapHelper'
-import { getActiveWysiwyg } from '../wysiwygHelper'
+import { getWysiwygByFolder, getActiveWysiwyg, selectNthMatchInElement, scrollWysiwygToSelection } from '../wysiwygHelper'
+import { eventBus } from '../composables/useEventBus'
 
 const emit = defineEmits<{ close: [] }>()
 
-// Panel position / drag
+// ─── Side-panel → folderDir mapping ───
+const SIDE_TO_FOLDER: Record<string, string> = {
+  outline: '大纲',
+  characters: '人设',
+  world: '设定',
+  material: '素材',
+}
+// Reverse: folderDir → activeSidePanel value
+const FOLDER_TO_SIDE: Record<string, string> = {
+  '大纲': 'outline',
+  '人设': 'characters',
+  '设定': 'world',
+  '素材': 'material',
+}
+
+// ─── Panel position / drag ───
 const panelX = ref(0)
 const panelY = ref(0)
 const isDragging = ref(false)
 const dragStart = { x: 0, y: 0, elX: 0, elY: 0 }
 onMounted(() => {
-  // Default position: right side near top
   panelX.value = window.innerWidth - 520
   panelY.value = 60
-  // Article projects only support chapter scope
-  const pt = appState.project?.projectType || 'novel'
-  if (pt === 'wechat_article' || pt === 'toutiao_article') {
-    scope.value = 'chapter'
+  // Default target: if a side-panel editor is registered, select it;
+  // otherwise fall back to 小说正文
+  const folder = activeSidePanelFolder.value
+  if (folder && getWysiwygByFolder(folder)) {
+    searchTarget.value = folder
+    searchScope.value = 'current'
+  } else {
+    searchTarget.value = 'main'
+    const pt = appState.project?.projectType || 'novel'
+    if (pt === 'wechat_article' || pt === 'toutiao_article') {
+      searchScope.value = 'current'
+    }
+  }
+  // Consume any pre-selected text captured before the panel opened
+  if (appState.findInitialText) {
+    findText.value = appState.findInitialText
+    appState.findInitialText = ''
   }
 })
 
@@ -33,63 +61,100 @@ function startDrag(e: MouseEvent) {
   document.addEventListener('mousemove', onDrag)
   document.addEventListener('mouseup', stopDrag)
 }
-
 function onDrag(e: MouseEvent) {
   if (!isDragging.value) return
   panelX.value = dragStart.elX + (e.clientX - dragStart.x)
   panelY.value = dragStart.elY + (e.clientY - dragStart.y)
 }
-
 function stopDrag() {
   isDragging.value = false
   document.removeEventListener('mousemove', onDrag)
   document.removeEventListener('mouseup', stopDrag)
 }
 
-// Mode
+// ─── Mode & Inputs ───
 const mode = ref<'find' | 'replace'>('find')
-
-// Inputs
 const findText = ref('')
 const replaceText = ref('')
-const scope = ref<'chapter' | 'all' | 'file' | 'folder'>('chapter')
+
+// ─── Target & Scope (replaces old radio-button scope) ───
+// target: 'main' | '大纲' | '人设' | '设定' | '素材'
+const searchTarget = ref<string>('main')
+// scope:  'current' = single file, 'all' = entire book / all folder files
+const searchScope = ref<'current' | 'all'>('current')
 
 // Options
 const caseSensitive = ref(false)
 const wholeWord = ref(false)
 const useRegex = ref(false)
 
-// Detect active editor type
-const isWysiwygMode = computed(() => !!getActiveWysiwyg())
-
-// Wysiwyg folder name (大纲/设定/人设/素材)
-const wysiwygFolder = computed(() => {
-  const w = getActiveWysiwyg()
-  return w?.folderDir || ''
-})
-
-// Match state (current chapter - editor based)
-const matches = ref<{ from: number; to: number; line: number; text: string }[]>([])
-const currentMatch = ref(0)
-const totalMatchCount = ref(0)
-
-// Search results (full book)
-const searchResults = ref<{ filePath: string; fileName: string; matches: SearchMatch[] }[]>([])
-
-// Full-book search state
-const fullBookLoading = ref(false)
-
+// ─── Derived ───
 const isArticleProject = computed(() => {
   const pt = appState.project?.projectType || 'novel'
   return pt === 'wechat_article' || pt === 'toutiao_article'
 })
 
+/** The folderDir of the currently visible side panel (空字符串 = none). */
+const activeSidePanelFolder = computed(() => {
+  return SIDE_TO_FOLDER[appState.activeSidePanel] || ''
+})
+
+/** Dropdown options for the target selector. */
+const targetOptions = computed(() => {
+  const opts: { value: string; label: string }[] = [
+    { value: 'main', label: '小说正文' },
+  ]
+  const folder = activeSidePanelFolder.value
+  if (folder) opts.push({ value: folder, label: folder })
+  return opts
+})
+
+/** Dropdown options for the scope selector (depends on the target). */
+const scopeOptions = computed(() => {
+  if (searchTarget.value === 'main') {
+    return [
+      { value: 'current' as const, label: '本章' },
+      ...(isArticleProject.value ? [] : [{ value: 'all' as const, label: '全书' }]),
+    ]
+  }
+  // Side-panel target
+  return [
+    { value: 'current' as const, label: '当前文件' },
+    { value: 'all' as const, label: '所有文件' },
+  ]
+})
+
+/** Is the current search a "single file" search (not a full-book/folder sweep)? */
+const isSingleFileSearch = computed(() => searchScope.value === 'current')
+
+// ─── Match state (single-file results) ───
+const matches = ref<{ from: number; to: number; line: number; text: string }[]>([])
+const currentMatch = ref(0)
+const totalMatchCount = ref(0)
+
+// ─── Search results (full-book / folder via backend) ───
+const searchResults = ref<{ filePath: string; fileName: string; matches: SearchMatch[] }[]>([])
+const fullBookLoading = ref(false)
+
+// ─── Collapsible file results ───
+const expandedFiles = ref<Set<string>>(new Set())
+
+function isFileExpanded(filePath: string) {
+  return expandedFiles.value.has(filePath)
+}
+function toggleFileExpand(filePath: string) {
+  const s = new Set(expandedFiles.value)
+  if (s.has(filePath)) s.delete(filePath)
+  else s.add(filePath)
+  expandedFiles.value = s
+}
+
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
+// ─── Regex builder ───
 function buildRegex(query: string, cs: boolean, ww: boolean, regex: boolean): RegExp | null {
   let flags = 'g'
   if (!cs) flags += 'i'
-
   let pattern: string
   if (regex) {
     pattern = query
@@ -99,126 +164,30 @@ function buildRegex(query: string, cs: boolean, ww: boolean, regex: boolean): Re
       pattern = `(?<![\\w\\u4e00-\\u9fff])${pattern}(?![\\w\\u4e00-\\u9fff])`
     }
   }
-
-  try {
-    return new RegExp(pattern, flags)
-  } catch {
-    return null
-  }
+  try { return new RegExp(pattern, flags) } catch { return null }
 }
 
-// Search in current chapter (editor content)
-function searchInEditor() {
-  if (isArticleProject.value) {
-    searchInTiptap()
-    return
-  }
+// ─── Get the target Wysiwyg handle for the selected target ───
+function getTargetWysiwyg() {
+  if (searchTarget.value === 'main') return null
+  const w = getWysiwygByFolder(searchTarget.value)
+  if (w && w.el && document.body.contains(w.el)) return w
+  return null
+}
 
-  // Check if a WysiwygEditor (side panel) is active
-  const wysiwyg = getActiveWysiwyg()
-  if (wysiwyg) {
-    searchInWysiwyg(wysiwyg)
-    return
-  }
+// ─── Search functions ───
+
+/** Search in the main CodeMirror editor (chapter scope). */
+function searchInEditor() {
+  if (isArticleProject.value) { searchInTiptap(); return }
 
   const view = getEditorView()
   if (!view || !findText.value) {
-    matches.value = []
-    totalMatchCount.value = 0
-    currentMatch.value = 0
+    matches.value = []; totalMatchCount.value = 0; currentMatch.value = 0
     return
   }
-
   const doc = view.state.doc
-  const query = findText.value
-  const allMatches: { from: number; to: number; line: number; text: string }[] = []
-
-  // Get the document text
   const content = doc.toString()
-  const re = buildRegex(query, caseSensitive.value, wholeWord.value, useRegex.value)
-  if (!re) return
-
-  let match: RegExpExecArray | null
-  while ((match = re.exec(content)) !== null) {
-    // Calculate line number
-    const line = content.slice(0, match.index).split('\n').length
-    // Get the line content
-    const lineStart = content.lastIndexOf('\n', match.index - 1) + 1
-    const lineEnd = content.indexOf('\n', match.index)
-    const lineText = content.slice(lineStart, lineEnd === -1 ? content.length : lineEnd)
-
-    allMatches.push({
-      from: match.index,
-      to: match.index + match[0].length,
-      line,
-      text: lineText.trim(),
-    })
-
-    if (match.index === re.lastIndex) re.lastIndex++
-    if (allMatches.length > 10000) break
-  }
-
-  matches.value = allMatches
-  totalMatchCount.value = allMatches.length
-  if (currentMatch.value >= allMatches.length) {
-    currentMatch.value = allMatches.length > 0 ? 0 : 0
-  }
-}
-
-// Search in TipTap editor (article projects) — walks ProseMirror text nodes
-function searchInTiptap() {
-  const editor = getTiptapEditor()
-  if (!editor || !findText.value) {
-    matches.value = []
-    totalMatchCount.value = 0
-    currentMatch.value = 0
-    return
-  }
-
-  const query = findText.value
-  const allMatches: { from: number; to: number; line: number; text: string }[] = []
-  const re = buildRegex(query, caseSensitive.value, wholeWord.value, useRegex.value)
-  if (!re) return
-
-  const doc = editor.state.doc
-  doc.descendants((node, pos) => {
-    if (!node.isText) return true
-    const text = node.text || ''
-    // Reset for each text node
-    re.lastIndex = 0
-    let m: RegExpExecArray | null
-    while ((m = re.exec(text)) !== null) {
-      const from = pos + m.index
-      const to = pos + m.index + m[0].length
-      // Calculate line number within text node
-      const before = text.slice(0, m.index)
-      const line = before.split('\n').length
-      const lineStart = text.lastIndexOf('\n', m.index - 1) + 1
-      const lineEnd = text.indexOf('\n', m.index)
-      const lineText = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd)
-      allMatches.push({ from, to, line: line + 1, text: lineText.trim() })
-      if (m.index === re.lastIndex) re.lastIndex++
-      if (allMatches.length > 10000) return false
-    }
-    return allMatches.length <= 10000
-  })
-
-  matches.value = allMatches
-  totalMatchCount.value = allMatches.length
-  if (currentMatch.value >= allMatches.length) {
-    currentMatch.value = allMatches.length > 0 ? 0 : 0
-  }
-}
-
-// Search in WysiwygEditor (side panels — 大纲/设定/人设/素材)
-function searchInWysiwyg(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwyg>>) {
-  if (!findText.value) {
-    matches.value = []
-    totalMatchCount.value = 0
-    currentMatch.value = 0
-    return
-  }
-  const content = wysiwyg.getContent()
   const re = buildRegex(findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
   if (!re) return
 
@@ -233,33 +202,225 @@ function searchInWysiwyg(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwyg
     if (match.index === re.lastIndex) re.lastIndex++
     if (allMatches.length > 10000) break
   }
+  matches.value = allMatches
+  totalMatchCount.value = allMatches.length
+  if (currentMatch.value >= allMatches.length) currentMatch.value = allMatches.length > 0 ? 0 : 0
+}
 
+function searchInTiptap() {
+  const editor = getTiptapEditor()
+  if (!editor || !findText.value) {
+    matches.value = []; totalMatchCount.value = 0; currentMatch.value = 0
+    return
+  }
+  const re = buildRegex(findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
+  if (!re) return
+
+  const allMatches: { from: number; to: number; line: number; text: string }[] = []
+  const doc = editor.state.doc
+  doc.descendants((node, pos) => {
+    if (!node.isText) return true
+    const text = node.text || ''
+    re.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text)) !== null) {
+      const from = pos + m.index; const to = pos + m.index + m[0].length
+      const before = text.slice(0, m.index)
+      const line = before.split('\n').length
+      const lineStart = text.lastIndexOf('\n', m.index - 1) + 1
+      const lineEnd = text.indexOf('\n', m.index)
+      const lineText = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd)
+      allMatches.push({ from, to, line: line + 1, text: lineText.trim() })
+      if (m.index === re.lastIndex) re.lastIndex++
+      if (allMatches.length > 10000) return false
+    }
+    return allMatches.length <= 10000
+  })
+  matches.value = allMatches
+  totalMatchCount.value = allMatches.length
+  if (currentMatch.value >= allMatches.length) currentMatch.value = allMatches.length > 0 ? 0 : 0
+}
+
+function searchInWysiwyg(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwyg>>) {
+  if (!findText.value) {
+    matches.value = []; totalMatchCount.value = 0; currentMatch.value = 0
+    return
+  }
+  const content = wysiwyg.getContent()
+  const re = buildRegex(findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
+  if (!re) return
+  const allMatches: { from: number; to: number; line: number; text: string }[] = []
+  let match: RegExpExecArray | null
+  while ((match = re.exec(content)) !== null) {
+    const line = content.slice(0, match.index).split('\n').length
+    const lineStart = content.lastIndexOf('\n', match.index - 1) + 1
+    const lineEnd = content.indexOf('\n', match.index)
+    const lineText = content.slice(lineStart, lineEnd === -1 ? content.length : lineEnd)
+    allMatches.push({ from: match.index, to: match.index + match[0].length, line, text: lineText.trim() })
+    if (match.index === re.lastIndex) re.lastIndex++
+    if (allMatches.length > 10000) break
+  }
   matches.value = allMatches
   totalMatchCount.value = allMatches.length
   currentMatch.value = allMatches.length > 0 ? 0 : 0
 }
 
+/** Full-book search (backend). */
+async function searchFullBook() {
+  if (!findText.value || !appState.project) return
+  fullBookLoading.value = true
+  try {
+    // Save the current file first so disk content matches the editor
+    // (otherwise unsaved edits are invisible to the backend search)
+    if (appState.currentFile && appState.isDirty && appState.currentContent) {
+      try { await writeFile(appState.currentFile.path, appState.currentContent); appState.isDirty = false } catch {}
+    }
+    const root = appState.project.projectType === 'novel'
+      ? appState.project.path + '/分卷'
+      : appState.project.path
+    console.log('[FindReplace] searchFullBook root:', root)
+    const results = await searchInProjectAdv(root, findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
+    console.log('[FindReplace] searchFullBook results count:', results.length)
+    searchResults.value = results
+    let count = 0
+    for (const r of results) count += r.matches.length
+    totalMatchCount.value = count
+    currentMatch.value = count > 0 ? 1 : 0
+    // Default: expand first file, collapse rest
+    expandedFiles.value = new Set(results.length > 0 ? [results[0].filePath] : [])
+  } catch (e) {
+    console.error('[FindReplace] searchFullBook error:', e)
+    searchResults.value = []
+  } finally { fullBookLoading.value = false }
+}
+
+/** Search all files in a side-panel folder via backend. */
+async function searchFolder(folderDir: string) {
+  if (!findText.value || !appState.project) return
+  fullBookLoading.value = true
+  try {
+    const folderPath = appState.project.path + '/' + folderDir
+    const results = await searchInProjectAdv(folderPath, findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
+    searchResults.value = results
+    let count = 0
+    for (const r of results) count += r.matches.length
+    totalMatchCount.value = count
+    currentMatch.value = count > 0 ? 1 : 0
+    expandedFiles.value = new Set(results.length > 0 ? [results[0].filePath] : [])
+  } catch {
+    searchResults.value = []
+  } finally { fullBookLoading.value = false }
+}
+
+// ─── Main search dispatcher ───
+function performSearch() {
+  searchResults.value = []
+  matches.value = []
+  if (!findText.value) { totalMatchCount.value = 0; return }
+
+  const target = searchTarget.value
+  const scope = searchScope.value
+
+  if (target === 'main') {
+    if (scope === 'current') {
+      searchInEditor()
+    } else {
+      console.log('[FindReplace] performSearch -> searchFullBook (target=main, scope=all)')
+      searchFullBook()
+    }
+  } else {
+    // Side-panel target
+    if (scope === 'current') {
+      const w = getTargetWysiwyg()
+      if (w) searchInWysiwyg(w)
+    } else {
+      searchFolder(target)
+    }
+  }
+}
+
 function goToMatch(index: number) {
+  const target = searchTarget.value
+  const scope = searchScope.value
+
   if (isArticleProject.value) {
     goToTiptapMatch(index)
     return
   }
-  const wysiwyg = getActiveWysiwyg()
-  if (wysiwyg) {
-    goToWysiwygMatch(wysiwyg, index)
-    return
+
+  if (target !== 'main' && scope === 'current') {
+    const wysiwyg = getTargetWysiwyg()
+    if (wysiwyg) { goToWysiwygMatch(wysiwyg, index); return }
   }
+  // 'main' target → CodeMirror
   const view = getEditorView()
   if (!view || matches.value.length === 0) return
+
+  // Normalize index
   if (index < 0) index = matches.value.length - 1
   if (index >= matches.value.length) index = 0
   currentMatch.value = index
+
   const m = matches.value[index]
-  view.dispatch({
-    selection: { anchor: m.from, head: m.to },
-    scrollIntoView: true,
-  })
-  view.focus()
+  if (!m) return
+
+  const doc = view.state.doc
+  const query = findText.value
+  if (!query) { view.focus(); return }
+
+  // Strategy: go to the stored line number, then re-find the correct
+  // occurrence of the query within that line.  We count how many matches
+  // on the same line come BEFORE the clicked one (localIndex), then
+  // find the (localIndex)-th occurrence within the current line text.
+  if (m.line >= 1 && m.line <= doc.lines) {
+    const line = doc.line(m.line)
+    // Count prior matches on the same line
+    let localIndex = 0
+    for (let i = 0; i < index; i++) {
+      if (matches.value[i]?.line === m.line) localIndex++
+    }
+    // Find the localIndex-th occurrence of the query on this line
+    const re = buildRegex(query, caseSensitive.value, wholeWord.value, useRegex.value)
+    if (re) {
+      let occurrence = 0
+      let rm: RegExpExecArray | null
+      while ((rm = re.exec(line.text)) !== null) {
+        if (occurrence === localIndex) {
+          view.dispatch({
+            selection: { anchor: line.from + rm.index, head: line.from + rm.index + rm[0].length },
+          })
+          view.focus()
+          // Direct scroll — more reliable than scrollIntoView which
+          // can be off due to CSS padding on .cm-content
+          const block = view.lineBlockAt(line.from)
+          if (block) view.scrollDOM.scrollTop = Math.max(0, block.top - 60)
+          return
+        }
+        occurrence++
+        if (rm.index === re.lastIndex) re.lastIndex++
+      }
+    }
+  }
+
+  // Fallback: scan the entire document for the Nth match
+  const re = buildRegex(query, caseSensitive.value, wholeWord.value, useRegex.value)
+  if (re) {
+    const content = doc.toString()
+    let nth = 0
+    let rm: RegExpExecArray | null
+    while ((rm = re.exec(content)) !== null) {
+      if (nth === index) {
+        view.dispatch({ selection: { anchor: rm.index, head: rm.index + rm[0].length } })
+        view.focus()
+        const block = view.lineBlockAt(rm.index)
+        if (block) view.scrollDOM.scrollTop = Math.max(0, block.top - 60)
+        return
+      }
+      nth++
+      if (rm.index === re.lastIndex) re.lastIndex++
+      if (nth > 10000) break
+    }
+  }
 }
 
 function goToTiptapMatch(index: number) {
@@ -271,35 +432,37 @@ function goToTiptapMatch(index: number) {
   const m = matches.value[index]
   editor.commands.setTextSelection({ from: m.from, to: m.to })
   editor.commands.focus()
-  // Force scroll so the ProseMirror container scrolls to the match
   scrollTiptapToSelection(editor)
 }
 
+/**
+ * Walk the rendered DOM text nodes and select the Nth occurrence of the query.
+ * Returns true if found, false otherwise.
+ */
 function goToWysiwygMatch(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwyg>>, index: number) {
   if (!matches.value.length) return
   if (index < 0) index = matches.value.length - 1
   if (index >= matches.value.length) index = 0
   currentMatch.value = index
   wysiwyg.focus()
-  const m = matches.value[index]
-  // Use window.find to select the match in contenteditable
-  try { window.find(m.text, false, false, true) } catch { /* fallback */ }
+  const query = findText.value
+  if (query && wysiwyg.el) {
+    selectNthMatchInElement(wysiwyg.el, query, index)
+  }
+  scrollWysiwygToSelection(wysiwyg)
 }
 
 function scrollTiptapToSelection(editor: NonNullable<ReturnType<typeof getTiptapEditor>>) {
   const dom = editor.view.dom as HTMLElement
   const sel = editor.state.selection
   const from = sel.from
-  // Get the Y-coordinate of the selection start
   const coords = editor.view.coordsAtPos(from)
   if (!coords) return
-  // Find the scrollable parent
   let parent = dom.parentElement
   while (parent) {
     const style = getComputedStyle(parent)
     if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
       const parentRect = parent.getBoundingClientRect()
-      // If the selection is not visible, scroll to make it visible
       if (coords.top < parentRect.top || coords.bottom > parentRect.bottom) {
         parent.scrollTop += coords.top - parentRect.top - 60
       }
@@ -312,130 +475,28 @@ function scrollTiptapToSelection(editor: NonNullable<ReturnType<typeof getTiptap
 function prevMatch() { goToMatch(currentMatch.value - 1) }
 function nextMatch() { goToMatch(currentMatch.value + 1) }
 
-// Search full book
-async function searchFullBook() {
-  if (!findText.value || !appState.project) return
-  fullBookLoading.value = true
-  try {
-    // For novel projects, only search the 分卷/ directory
-    const root = appState.project.projectType === 'novel'
-      ? appState.project.path + '/分卷'
-      : appState.project.path
-    const results = await searchInProjectAdv(
-      root,
-      findText.value,
-      caseSensitive.value,
-      wholeWord.value,
-      useRegex.value,
-    )
-    searchResults.value = results
-
-    let count = 0
-    for (const r of results) count += r.matches.length
-    totalMatchCount.value = count
-    currentMatch.value = count > 0 ? 1 : 0
-  } catch {
-    searchResults.value = []
-  } finally {
-    fullBookLoading.value = false
-  }
-}
-
-/** Search all files in a side-panel folder (大纲/设定/人设/素材) */
-async function searchFolder(folderDir: string) {
-  if (!findText.value || !appState.project) return
-  fullBookLoading.value = true
-  try {
-    const folderPath = appState.project.path + '/' + folderDir
-    const results = await searchInProjectAdv(
-      folderPath,
-      findText.value,
-      caseSensitive.value,
-      wholeWord.value,
-      useRegex.value,
-    )
-    searchResults.value = results
-    let count = 0
-    for (const r of results) count += r.matches.length
-    totalMatchCount.value = count
-    currentMatch.value = count > 0 ? 1 : 0
-  } catch {
-    searchResults.value = []
-  } finally {
-    fullBookLoading.value = false
-  }
-}
-
-// Auto-search on input change
-watch([findText, caseSensitive, wholeWord, useRegex], () => {
-  searchResults.value = []
-  matches.value = []
-  if (searchTimer) clearTimeout(searchTimer)
-  if (!findText.value) {
-    totalMatchCount.value = 0
-    return
-  }
-
-  if (scope.value === 'chapter') {
-    searchTimer = setTimeout(() => searchInEditor(), 200)
-  } else if (scope.value === 'file' && isWysiwygMode.value) {
-    const w = getActiveWysiwyg()
-    if (w) searchTimer = setTimeout(() => searchInWysiwyg(w), 200)
-  } else if (scope.value === 'folder') {
-    fullBookLoading.value = true
-    searchTimer = setTimeout(() => searchFolder(wysiwygFolder.value || ''), 1500)
-  } else {
-    fullBookLoading.value = true
-    searchTimer = setTimeout(() => searchFullBook(), 1500)
-  }
-})
-
-watch(scope, () => {
-  searchResults.value = []
-  if (scope.value === 'chapter') {
-    searchInEditor()
-  } else if (scope.value === 'file' && isWysiwygMode.value) {
-    const w = getActiveWysiwyg()
-    if (w) searchInWysiwyg(w)
-  }
-})
-
-// Article projects only support current-chapter scope
-watch(isArticleProject, (v) => {
-  if (v) scope.value = 'chapter'
-})
-
-// Auto-switch scope when entering/leaving Wysiwyg mode
-watch(isWysiwygMode, (v) => {
-  if (v) scope.value = 'file'
-})
-
-// Replace handling
+// ─── Replace ───
 async function replaceCurrent() {
   if (!findText.value) return
-  if (isArticleProject.value) {
-    replaceInTiptap()
-    return
+  const target = searchTarget.value
+  const scope = searchScope.value
+
+  if (isArticleProject.value) { replaceInTiptap(); return }
+
+  // Side-panel single-file replace
+  if (target !== 'main' && scope === 'current') {
+    const wysiwyg = getTargetWysiwyg()
+    if (wysiwyg) { replaceInWysiwyg(wysiwyg); return }
   }
-  const wysiwyg = getActiveWysiwyg()
-  if (wysiwyg) {
-    replaceInWysiwyg(wysiwyg)
-    return
-  }
+  // CodeMirror replace
   const view = getEditorView()
   if (!view || matches.value.length === 0) return
-
   const m = matches.value[currentMatch.value]
   if (!m) return
-
-  view.dispatch({
-    changes: { from: m.from, to: m.to, insert: replaceText.value },
-  })
+  view.dispatch({ changes: { from: m.from, to: m.to, insert: replaceText.value } })
   appState.currentContent = view.state.doc.toString()
   cacheFileContent(appState.currentFile?.path, appState.currentContent)
   appState.isDirty = true
-
-  // Re-search after replace
   searchInEditor()
   if (currentMatch.value >= matches.value.length && matches.value.length > 0) {
     currentMatch.value = matches.value.length - 1
@@ -447,13 +508,7 @@ function replaceInTiptap() {
   if (!editor || matches.value.length === 0) return
   const m = matches.value[currentMatch.value]
   if (!m) return
-
-  editor.chain().focus()
-    .setTextSelection({ from: m.from, to: m.to })
-    .deleteSelection()
-    .insertContent(replaceText.value)
-    .run()
-
+  editor.chain().focus().setTextSelection({ from: m.from, to: m.to }).deleteSelection().insertContent(replaceText.value).run()
   appState.isDirty = true
   setTimeout(() => searchInTiptap(), 50)
 }
@@ -471,13 +526,8 @@ function replaceInWysiwyg(wysiwyg: NonNullable<ReturnType<typeof getActiveWysiwy
 function replaceAllInTiptap() {
   const editor = getTiptapEditor()
   if (!editor) return
-
-  const query = findText.value
-  const repl = replaceText.value
-  const re = buildRegex(query, caseSensitive.value, wholeWord.value, useRegex.value)
+  const re = buildRegex(findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
   if (!re) return
-
-  // Collect all matches first, then replace in reverse order to avoid position shifts
   const allMatches: { from: number; to: number }[] = []
   const doc = editor.state.doc
   doc.descendants((node, pos) => {
@@ -491,12 +541,10 @@ function replaceAllInTiptap() {
     }
     return true
   })
-
-  // Replace in reverse order
   let tr = editor.state.tr
   for (let i = allMatches.length - 1; i >= 0; i--) {
     const m = allMatches[i]
-    tr = tr.replaceWith(m.from, m.to, editor.state.schema.text(repl))
+    tr = tr.replaceWith(m.from, m.to, editor.state.schema.text(replaceText.value))
   }
   editor.view.dispatch(tr)
   appState.isDirty = true
@@ -515,84 +563,110 @@ function replaceAllInWysiwyg(wysiwyg: NonNullable<ReturnType<typeof getActiveWys
 
 async function replaceAll() {
   if (!findText.value) return
+  const target = searchTarget.value
+  const scope = searchScope.value
 
-  if (scope.value === 'chapter') {
-    if (isArticleProject.value) {
-      replaceAllInTiptap()
-      return
-    }
-    const wysiwyg = getActiveWysiwyg()
-    if (wysiwyg) {
-      replaceAllInWysiwyg(wysiwyg)
-      return
-    }
-    // Replace in CodeMirror editor
+  if (target === 'main' && scope === 'current') {
+    if (isArticleProject.value) { replaceAllInTiptap(); return }
     const view = getEditorView()
     if (!view) return
-    const doc = view.state.doc
-    const content = doc.toString()
-    const query = findText.value
-    const repl = replaceText.value
-    const re = buildRegex(query, caseSensitive.value, wholeWord.value, useRegex.value)
+    const content = view.state.doc.toString()
+    const re = buildRegex(findText.value, caseSensitive.value, wholeWord.value, useRegex.value)
     if (!re) return
-
-    const newContent = content.replace(re, repl)
-
-    view.dispatch({
-      changes: { from: 0, to: content.length, insert: newContent },
-    })
+    const newContent = content.replace(re, replaceText.value)
+    view.dispatch({ changes: { from: 0, to: content.length, insert: newContent } })
     appState.currentContent = newContent
     cacheFileContent(appState.currentFile?.path, newContent)
     appState.isDirty = true
     searchInEditor()
+  } else if (target !== 'main' && scope === 'current') {
+    const wysiwyg = getTargetWysiwyg()
+    if (wysiwyg) replaceAllInWysiwyg(wysiwyg)
   } else {
-    // Replace in all files via backend
+    // 'all' scope — backend replace
     if (!appState.project) return
-    const scopeFile = ''
+    // ── Confirm dialog ──
+    const replaceFileCount = searchResults.value.length
+    const replaceMatchCount = totalMatchCount.value
+    if (replaceFileCount > 0) {
+      const scopeName = target !== 'main' ? `「${target}」文件夹` : '全书'
+      const msg = `即将在 ${scopeName} 的 ${replaceFileCount} 个文件中执行替换，` +
+        `共 ${replaceMatchCount} 个匹配项。\n\n确定执行全部替换？`
+      if (!confirm(msg)) return
+    }
+    // ── Save current file first so unsaved edits are included ──
+    if (appState.currentFile && appState.isDirty && appState.currentContent) {
+      try { await writeFile(appState.currentFile.path, appState.currentContent); appState.isDirty = false } catch {}
+    }
+    // ── Determine root path ──
+    let rootPath: string
+    if (target !== 'main') {
+      rootPath = appState.project.path + '/' + target
+    } else if (appState.project.projectType === 'novel') {
+      rootPath = appState.project.path + '/分卷'
+    } else {
+      rootPath = appState.project.path
+    }
     try {
-      await findAndReplaceAdv(
-        appState.project.path,
-        findText.value,
-        replaceText.value,
-        scopeFile,
-        caseSensitive.value,
-        wholeWord.value,
-        useRegex.value,
-      )
-      // Reload current file
+      const count = await findAndReplaceAdv(rootPath, findText.value, replaceText.value, '',
+        caseSensitive.value, wholeWord.value, useRegex.value)
+      console.log('[FindReplace] replaceAll replaced', count, 'occurrences')
+      // Clear caches so all files are re-read from disk next time
+      clearAllContentCache()
+      // Refresh the main editor's current file
       if (appState.currentFile) {
         const content = await readFile(appState.currentFile.path)
         appState.currentContent = content
-        // Don't cache — content was overwritten on disk by replaceAll
       }
-      // Update file tree
-      if (appState.project) {
-        appState.fileTree = await readDirectory(appState.project.path)
+      if (appState.project) appState.fileTree = await readDirectory(appState.project.path)
+      // Notify the side panel to reload its currently-open file from disk
+      if (target !== 'main') {
+        eventBus.emit('panel:refreshContent', { folderDir: target })
       }
-      searchFullBook()
-    } catch {}
+      performSearch()
+    } catch (e) { console.error('[replaceAll] backend failed:', e) }
   }
 }
 
+// ─── Navigate to full-book/folder result ───
 async function goToSearchResult(m: SearchMatch) {
-  // Force-save current file to disk before switching
-  if (appState.currentFile && appState.isDirty && appState.currentContent) {
-    try {
-      await writeFile(appState.currentFile.path, appState.currentContent)
-      appState.isDirty = false
-    } catch {}
+  const target = searchTarget.value
+
+  // ── Side-panel target: open in the floating layer's editor ──
+  if (target !== 'main') {
+    const sidePanel = FOLDER_TO_SIDE[target]
+    if (sidePanel) {
+      // Find which match-index this click corresponds to (within its file)
+      let matchIndex = 0
+      for (const fileResult of searchResults.value) {
+        if (fileResult.filePath === m.filePath) {
+          const idx = fileResult.matches.indexOf(m)
+          if (idx !== -1) { matchIndex = idx; break }
+        }
+      }
+      // Switch to the correct panel — the panel's own event handler
+      // will open the file and position to the correct match
+      appState.activeSidePanel = sidePanel
+      await nextTick()
+      eventBus.emit('panel:openFile', {
+        folderDir: target,
+        filePath: m.filePath,
+        fileName: m.fileName,
+        matchIndex,
+        query: findText.value,
+      })
+    }
+    return
   }
-  // Save current content to cache before switching
+
+  // ── Main editor target: always read from disk so the loaded content
+  //    exactly matches the backend search result positions.  The cache
+  //    may contain un-saved edits that would shift line numbers/offsets.
+  if (appState.currentFile && appState.isDirty && appState.currentContent) {
+    try { await writeFile(appState.currentFile.path, appState.currentContent); appState.isDirty = false } catch {}
+  }
   if (appState.currentFile && appState.currentContent) {
     cacheFileContent(appState.currentFile.path, appState.currentContent)
-  }
-  const cached = getCachedContent(m.filePath)
-  if (cached !== undefined) {
-    appState.currentFile = { path: m.filePath, name: m.fileName }
-    appState.currentContent = cached
-    appState.isDirty = true
-    jumpToMatch(m)
-    return
   }
   try {
     const content = await readFile(m.filePath)
@@ -600,56 +674,80 @@ async function goToSearchResult(m: SearchMatch) {
     appState.currentContent = content
     appState.isDirty = false
     jumpToMatch(m)
-  } catch {}
+  } catch { /* ignore */ }
 }
 
 function jumpToMatch(m: SearchMatch) {
-    // Scroll to line/match
-    setTimeout(() => {
-      if (isArticleProject.value) {
-        const editor = getTiptapEditor()
-        if (!editor) return
-        const searchText = findText.value
-        if (searchText) {
-          const doc = editor.state.doc
-          let found = false
-          doc.descendants((node, pos) => {
-            if (found || !node.isText) return true
-            const idx = (node.text || '').indexOf(searchText)
-            if (idx !== -1) {
-              const from = pos + idx
-              const to = from + searchText.length
-              editor.commands.setTextSelection({ from, to })
-              editor.commands.focus()
-              scrollTiptapToSelection(editor)
-              found = true
-              return false
-            }
-            return true
-          })
-        } else {
-          editor.commands.focus()
-        }
-        return
-      }
-      const view = getEditorView()
-      if (!view) return
-      const doc = view.state.doc
-      if (m.lineNumber < 1 || m.lineNumber > doc.lines) return
-      const line = doc.line(m.lineNumber)
-      view.dispatch({
-        selection: { anchor: line.from + m.matchStart, head: line.from + m.matchEnd },
-        scrollIntoView: true,
-      })
-    }, 100)
+  setTimeout(() => {
+    if (isArticleProject.value) {
+      const editor = getTiptapEditor()
+      if (!editor) return
+      const searchText = findText.value
+      if (searchText) {
+        const doc = editor.state.doc
+        let found = false
+        doc.descendants((node, pos) => {
+          if (found || !node.isText) return true
+          const idx = (node.text || '').indexOf(searchText)
+          if (idx !== -1) {
+            editor.commands.setTextSelection({ from: pos + idx, to: pos + idx + searchText.length })
+            editor.commands.focus()
+            scrollTiptapToSelection(editor)
+            found = true; return false
+          }
+          return true
+        })
+      } else { editor.commands.focus() }
+      return
+    }
+    const view = getEditorView()
+    if (!view) return
+    const doc = view.state.doc
+    if (m.lineNumber < 1 || m.lineNumber > doc.lines) return
+    const line = doc.line(m.lineNumber)
+    view.dispatch({
+      selection: { anchor: line.from + m.matchStart, head: line.from + m.matchEnd },
+      scrollIntoView: true,
+    })
+  }, 100)
 }
 
+// ─── Watchers ───
+
+// Auto-search on input / option change (debounced for single-file)
+watch([findText, caseSensitive, wholeWord, useRegex], () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  if (!findText.value) { totalMatchCount.value = 0; return }
+
+  if (isSingleFileSearch.value) {
+    searchTimer = setTimeout(() => performSearch(), 200)
+  } else {
+    // 'all' scope: debounce longer, then search
+    fullBookLoading.value = true
+    searchTimer = setTimeout(() => performSearch(), 1500)
+  }
+})
+
+// Re-search when target or scope changes
+watch([searchTarget, searchScope], () => {
+  if (!findText.value) return
+  console.log('[FindReplace] scope/target changed:', searchTarget.value, searchScope.value)
+  performSearch()
+})
+
+// Article projects: only 'current' scope
+watch(isArticleProject, (v) => {
+  if (v) searchScope.value = 'current'
+})
+
+// ─── Cleanup ───
 onUnmounted(() => {
   if (searchTimer) clearTimeout(searchTimer)
   document.removeEventListener('mousemove', onDrag)
   document.removeEventListener('mouseup', stopDrag)
 })
 
+// ─── Text helpers ───
 function highlightText(text: string, query: string): string {
   if (!query) return escapeHtml(text)
   const lowerQ = query.toLowerCase()
@@ -658,10 +756,7 @@ function highlightText(text: string, query: string): string {
   let pos = 0
   while (pos < text.length) {
     const idx = lowerText.indexOf(lowerQ, pos)
-    if (idx === -1) {
-      result += escapeHtml(text.slice(pos))
-      break
-    }
+    if (idx === -1) { result += escapeHtml(text.slice(pos)); break }
     result += escapeHtml(text.slice(pos, idx))
     result += `<mark>${escapeHtml(text.slice(idx, idx + query.length))}</mark>`
     pos = idx + query.length
@@ -672,13 +767,11 @@ function highlightText(text: string, query: string): string {
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
+
 </script>
 
 <template>
-  <div
-    class="find-replace-panel"
-    :style="{ left: panelX + 'px', top: panelY + 'px' }"
-  >
+  <div class="find-replace-panel" :style="{ left: panelX + 'px', top: panelY + 'px' }">
     <!-- Draggable header -->
     <div class="fr-header" @mousedown="startDrag">
       <div class="fr-tabs">
@@ -690,55 +783,49 @@ function escapeHtml(s: string): string {
     </div>
 
     <div class="fr-body">
-      <!-- Find input with match counter -->
+      <!-- ── Target & Scope selectors (same row) ── -->
+      <div class="fr-two-selectors">
+        <div class="fr-selector-item">
+          <label class="fr-selector-label">作用范围</label>
+          <select v-model="searchTarget" class="fr-select">
+            <option v-for="opt in targetOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </div>
+        <div class="fr-selector-item">
+          <label class="fr-selector-label">搜索范围</label>
+          <select v-model="searchScope" class="fr-select">
+            <option v-for="opt in scopeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- ── Find input + search button ── -->
       <div class="fr-input-wrap">
-        <input
-          v-model="findText"
-          type="text"
-          class="fr-input"
-          placeholder="查找..."
-          @keydown.enter="isArticleProject || scope === 'chapter' || scope === 'file' ? nextMatch() : (scope === 'folder' ? searchFolder(wysiwygFolder) : searchFullBook())"
-        />
+        <input v-model="findText" type="text" class="fr-input" placeholder="查找..."
+          @keydown.enter="isSingleFileSearch ? nextMatch() : undefined" />
         <span v-if="findText && totalMatchCount > 0" class="match-counter">
-          {{ scope === 'chapter' || scope === 'file' ? `${currentMatch + 1}/${totalMatchCount}` : `${totalMatchCount} 处` }}
+          {{ isSingleFileSearch ? `${currentMatch + 1}/${totalMatchCount}` : `${totalMatchCount} 处` }}
         </span>
         <button v-if="findText" class="input-clear" @click="findText = ''">✕</button>
       </div>
 
-      <!-- Replace input -->
+      <!-- ── Replace input ── -->
       <div v-if="mode === 'replace'" class="fr-input-wrap">
-        <input
-          v-model="replaceText"
-          type="text"
-          class="fr-input"
-          placeholder="替换为..."
-          @keydown.enter="replaceCurrent"
-        />
+        <input v-model="replaceText" type="text" class="fr-input" placeholder="替换为..." @keydown.enter="replaceCurrent" />
       </div>
 
-      <!-- Options row -->
+      <!-- ── Options + search button (same row) ── -->
       <div class="fr-opt-row">
         <div class="fr-opt-group">
           <button class="opt-btn" :class="{ active: caseSensitive }" @click="caseSensitive = !caseSensitive" title="区分大小写">Aa</button>
           <button class="opt-btn" :class="{ active: wholeWord }" @click="wholeWord = !wholeWord" title="全词匹配">词</button>
           <button class="opt-btn" :class="{ active: useRegex }" @click="useRegex = !useRegex" title="正则表达式">.*</button>
         </div>
-        <div class="fr-radio-group">
-          <!-- Wysiwyg (side panel) mode -->
-          <template v-if="isWysiwygMode">
-            <label class="fr-radio"><input v-model="scope" type="radio" value="file" /> 当前文件</label>
-            <label class="fr-radio"><input v-model="scope" type="radio" value="folder" /> 整个{{ wysiwygFolder }}文件夹</label>
-          </template>
-          <!-- CodeMirror (normal) mode -->
-          <template v-else>
-            <label class="fr-radio"><input v-model="scope" type="radio" value="chapter" /> 本章</label>
-            <label v-if="!isArticleProject" class="fr-radio"><input v-model="scope" type="radio" value="all" /> 全书</label>
-          </template>
-        </div>
+        <button class="fr-search-btn" @click="performSearch" :disabled="!findText">🔍 查找</button>
       </div>
 
-      <!-- Match navigation (current chapter / wysiwyg file) -->
-      <div v-if="(scope === 'chapter' || scope === 'file') && totalMatchCount > 0" class="fr-nav-row">
+      <!-- ── Navigation & replace buttons (single-file results) ── -->
+      <div v-if="isSingleFileSearch && totalMatchCount > 0" class="fr-nav-row">
         <div class="fr-nav-buttons">
           <button class="fr-nav-btn" @click="prevMatch" :disabled="totalMatchCount === 0" title="上一个 (Shift+Enter)">▲</button>
           <button class="fr-nav-btn" @click="nextMatch" :disabled="totalMatchCount === 0" title="下一个 (Enter)">▼</button>
@@ -749,56 +836,47 @@ function escapeHtml(s: string): string {
         </div>
       </div>
 
-      <!-- Replace buttons for full book / folder (novel only) -->
-      <div v-if="!isArticleProject && (scope === 'all' || scope === 'folder') && findText" class="fr-nav-row">
-        <button class="fr-action-btn" @click="scope === 'folder' ? searchFolder(wysiwygFolder) : searchFullBook()" :disabled="fullBookLoading">
-          {{ fullBookLoading ? '搜索中...' : (scope === 'folder' ? ('搜索' + wysiwygFolder + '文件夹') : '搜索全书') }}
+      <!-- ── Action buttons for 'all' scope ── -->
+      <div v-if="!isSingleFileSearch && findText" class="fr-nav-row">
+        <button class="fr-action-btn" @click="performSearch" :disabled="fullBookLoading">
+          {{ fullBookLoading ? '搜索中...' : (searchTarget !== 'main' ? '搜索文件夹' : '搜索全书') }}
         </button>
-        <button v-if="mode === 'replace' && totalMatchCount > 0" class="fr-action-btn primary" @click="replaceAll">
-          全部替换
-        </button>
+        <button v-if="mode === 'replace' && totalMatchCount > 0" class="fr-action-btn primary" @click="replaceAll">全部替换</button>
       </div>
 
       <!-- Loading indicator -->
       <div v-if="fullBookLoading" class="fr-loading">搜索中...</div>
 
-      <!-- === Match results display === -->
-      <!-- Current chapter / file results -->
-      <div v-if="(scope === 'chapter' || scope === 'file') && totalMatchCount > 0" class="fr-results">
-        <div class="fr-results-header">
-          {{ totalMatchCount }} 个匹配
-        </div>
+      <!-- ── Single-file results ── -->
+      <div v-if="isSingleFileSearch && totalMatchCount > 0" class="fr-results">
+        <div class="fr-results-header">{{ totalMatchCount }} 个匹配</div>
         <div class="fr-results-list">
-          <div
-            v-for="(m, i) in matches"
-            :key="i"
-            class="fr-result-item"
-            :class="{ active: i === currentMatch }"
-            @click="goToMatch(i)"
-          >
+          <div v-for="(m, i) in matches" :key="i"
+            class="fr-result-item" :class="{ active: i === currentMatch }" @click="goToMatch(i)">
             <span class="fr-result-num">{{ m.line }}</span>
             <span class="fr-result-text" v-html="highlightText(m.text, findText)"></span>
           </div>
         </div>
       </div>
 
-      <!-- Full book / folder results (novel only) -->
-      <div v-if="!isArticleProject && (scope === 'all' || scope === 'folder') && searchResults.length > 0" class="fr-results">
-        <div class="fr-results-header">
-          共 {{ totalMatchCount }} 个结果，{{ searchResults.length }} 个文件
-        </div>
+      <!-- ── Full-book / folder results (collapsible) ── -->
+      <div v-if="!isSingleFileSearch && searchResults.length > 0" class="fr-results">
+        <div class="fr-results-header">共 {{ totalMatchCount }} 个结果，{{ searchResults.length }} 个文件</div>
         <div class="fr-results-list">
           <template v-for="file in searchResults" :key="file.filePath">
-            <div class="fr-result-file">{{ file.fileName }} ({{ file.matches.length }})</div>
-            <div
-              v-for="(m, i) in file.matches"
-              :key="i"
-              class="fr-result-item"
-              @click="goToSearchResult(m)"
-            >
-              <span class="fr-result-num">{{ m.lineNumber }}</span>
-              <span class="fr-result-text" v-html="highlightText(m.lineContent.trim(), findText)"></span>
+            <!-- File header: clickable to collapse/expand -->
+            <div class="fr-result-file" @click="toggleFileExpand(file.filePath)">
+              <span class="fr-collapse-icon">{{ isFileExpanded(file.filePath) ? '▼' : '▶' }}</span>
+              {{ file.fileName }} ({{ file.matches.length }})
             </div>
+            <!-- Matches (shown when expanded) -->
+            <template v-if="isFileExpanded(file.filePath)">
+              <div v-for="(m, i) in file.matches" :key="i"
+                class="fr-result-item" @click="goToSearchResult(m)">
+                <span class="fr-result-num">{{ m.lineNumber }}</span>
+                <span class="fr-result-text" v-html="highlightText(m.lineContent.trim(), findText)"></span>
+              </div>
+            </template>
           </template>
         </div>
       </div>
@@ -880,6 +958,40 @@ function escapeHtml(s: string): string {
   flex: 1;
 }
 
+/* Selector rows (above input, same line) */
+.fr-two-selectors {
+  display: flex;
+  gap: 8px;
+}
+.fr-selector-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.fr-selector-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 48px;
+}
+.fr-select {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+.fr-select:focus { border-color: var(--accent-color); }
+
 /* Input */
 .fr-input-wrap {
   display: flex;
@@ -921,6 +1033,22 @@ function escapeHtml(s: string): string {
 }
 .input-clear:hover { color: var(--text-primary); background: var(--hover-bg); }
 
+.fr-search-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--accent-color);
+  border-radius: 4px;
+  background: var(--accent-color);
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+.fr-search-btn:hover:not(:disabled) { opacity: 0.9; }
+.fr-search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* Options */
 .fr-opt-row {
   display: flex;
@@ -946,18 +1074,6 @@ function escapeHtml(s: string): string {
 }
 .opt-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
 .opt-btn.active { color: var(--accent-color); border-color: var(--accent-color); background: var(--accent-light); }
-
-.fr-radio-group { display: flex; gap: 10px; }
-
-.fr-radio {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 12px;
-  color: var(--text-primary);
-  cursor: pointer;
-}
-.fr-radio input { accent-color: var(--accent-color); }
 
 /* Nav & actions */
 .fr-nav-row {
@@ -1032,11 +1148,25 @@ function escapeHtml(s: string): string {
 }
 
 .fr-result-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
   padding: 4px 4px 2px;
   margin-top: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-radius: 4px;
+}
+.fr-result-file:hover { background: var(--hover-bg); }
+
+.fr-collapse-icon {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 12px;
+  flex-shrink: 0;
 }
 
 .fr-result-item {

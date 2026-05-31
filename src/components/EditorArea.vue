@@ -2,7 +2,19 @@
 import { computed, watch, ref, onMounted, onUnmounted } from 'vue'
 import { Codemirror } from 'vue-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
-import { basicSetup, EditorView } from 'codemirror'
+import { EditorState } from '@codemirror/state'
+import {
+  EditorView, lineNumbers, highlightActiveLineGutter, highlightSpecialChars,
+  drawSelection, dropCursor, rectangularSelection, crosshairCursor,
+  highlightActiveLine, keymap,
+} from '@codemirror/view'
+import {
+  foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle,
+  bracketMatching, foldKeymap,
+} from '@codemirror/language'
+import { history, defaultKeymap, historyKeymap } from '@codemirror/commands'
+import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete'
+import { lintKeymap } from '@codemirror/lint'
 import { appState, cacheFileContent } from '../store'
 import { writeFile, renameFile, readDirectory } from '../api'
 import { setEditorView, getEditorView } from '../editorHelper'
@@ -22,7 +34,40 @@ const warmDarkTheme = EditorView.theme({
 })
 
 const extensions = computed<any[]>(() => {
-  const base: any[] = [basicSetup, markdown({ base: markdownLanguage }), EditorView.lineWrapping]
+  // Custom CodeMirror setup: same as basicSetup but WITHOUT @codemirror/search
+  // (searchKeymap, highlightSelectionMatches, openSearchPanel, etc.)
+  const base: any[] = [
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightSpecialChars(),
+    history(),
+    foldGutter(),
+    drawSelection(),
+    dropCursor(),
+    EditorState.allowMultipleSelections.of(true),
+    indentOnInput(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    bracketMatching(),
+    closeBrackets(),
+    autocompletion(),
+    rectangularSelection(),
+    crosshairCursor(),
+    highlightActiveLine(),
+    keymap.of([
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      // NOTE: searchKeymap intentionally omitted — we use our own FindReplace panel.
+      // But vue-codemirror's default still includes basicSetup with searchKeymap,
+      // so we explicitly suppress Ctrl+F to prevent the native search panel.
+      { key: 'Mod-f', run: () => true },
+      ...historyKeymap,
+      ...foldKeymap,
+      ...completionKeymap,
+      ...lintKeymap,
+    ]),
+    markdown({ base: markdownLanguage }),
+    EditorView.lineWrapping,
+  ]
   if (appState.theme === 'dark') {
     base.push(warmDarkTheme)
   }
@@ -569,6 +614,11 @@ const editorStyle = computed(() => ({
   line-height: var(--editor-line-height, 1.9);
   font-weight: var(--editor-font-weight, normal);
   color: var(--editor-color, var(--text-primary));
+}
+
+/* Hide CodeMirror's native search/replace panel — we use our own */
+.editor-wrapper :deep(.cm-panels) {
+  display: none !important;
 }
 
 .editor-wrapper :deep(.cm-content) {
